@@ -658,7 +658,31 @@ app.get('/health', (req, res) => {
     });
 });
 
-
+// TEMPORARY TEST ENDPOINT - Remove after debugging
+app.post('/api/test-password', async (req, res) => {
+    const { email, password } = req.body;
+    
+    try {
+        const result = await pool.query('SELECT email, password FROM users WHERE email = $1', [email]);
+        
+        if (result.rows.length === 0) {
+            return res.json({ error: 'User not found' });
+        }
+        
+        const user = result.rows[0];
+        const bcrypt = await import('bcryptjs');
+        const isValid = await bcrypt.compare(password, user.password);
+        
+        res.json({
+            email: user.email,
+            password_hash: user.password.substring(0, 20) + '...',
+            password_entered: password,
+            is_valid: isValid
+        });
+    } catch (err) {
+        res.json({ error: err.message });
+    }
+});
 
 // ============ START SERVER ============
 app.listen(PORT, () => {
