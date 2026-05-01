@@ -1,7 +1,22 @@
-// client/src/services/api.js - Complete API Service
+// client/src/services/api.js - Smart API URL detection
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+// Auto-detect which API URL to use based on where the app is running
+const getApiUrl = () => {
+    // Check if we're in production (on Render)
+    const isProduction = window.location.hostname !== 'localhost' && 
+                        !window.location.hostname.includes('127.0.0.1') &&
+                        !window.location.hostname.includes('192.168');
+    
+    if (isProduction) {
+        return 'https://pharma-traceability-ethiopia.onrender.com/api';
+    }
+    // Development mode (localhost)
+    return 'http://localhost:5000/api';
+};
+
+const API_BASE_URL = getApiUrl();
+console.log('🔗 API URL:', API_BASE_URL); // Helpful for debugging
 
 // Create axios instance
 const api = axios.create({
@@ -31,7 +46,6 @@ api.interceptors.response.use(
     (response) => response,
     (error) => {
         if (error.response?.status === 401) {
-            // Token expired or invalid
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             window.location.href = '/login';
@@ -41,7 +55,6 @@ api.interceptors.response.use(
 );
 
 // ============ AUTHENTICATION APIS ============
-
 export const login = (email, password) => {
     return api.post('/auth/login', { email, password });
 };
@@ -61,8 +74,7 @@ export const logout = () => {
     window.location.href = '/login';
 };
 
-// ============ USER MANAGEMENT APIS (Admin only) ============
-
+// ============ USER MANAGEMENT APIS ============
 export const getUsers = () => {
     return api.get('/admin/users');
 };
@@ -76,7 +88,6 @@ export const deleteUser = (id) => {
 };
 
 // ============ PRODUCT APIS ============
-
 export const getProducts = () => {
     return api.get('/products');
 };
@@ -98,7 +109,6 @@ export const deleteProduct = (id) => {
 };
 
 // ============ BATCH APIS ============
-
 export const getBatches = () => {
     return api.get('/batches');
 };
@@ -111,18 +121,12 @@ export const createBatch = (batchData) => {
     return api.post('/batches', batchData);
 };
 
-// ============ VERIFICATION APIS (Scanner) ============
-
+// ============ VERIFICATION APIS ============
 export const verifyProduct = (data) => {
     return api.post('/verify', data);
 };
 
-export const bulkVerify = (products) => {
-    return api.post('/verify/bulk', products);
-};
-
 // ============ DASHBOARD APIS ============
-
 export const getDashboardStats = () => {
     return api.get('/dashboard/stats');
 };
@@ -136,7 +140,6 @@ export const getExpiryAlerts = () => {
 };
 
 // ============ RECALL APIS ============
-
 export const getRecalls = () => {
     return api.get('/recalls');
 };
@@ -145,58 +148,13 @@ export const createRecall = (recallData) => {
     return api.post('/recalls', recallData);
 };
 
-export const updateRecall = (id, recallData) => {
-    return api.put(`/recalls/${id}`, recallData);
-};
-
 // ============ REPORT APIS ============
-
 export const getEFDAReport = (params) => {
     return api.get('/reports/efda', { params });
 };
 
 export const getInventoryReport = () => {
     return api.get('/reports/inventory');
-};
-
-// ============ INVENTORY APIS ============
-
-export const getInventory = () => {
-    return api.get('/inventory');
-};
-
-export const moveInventory = (data) => {
-    return api.post('/inventory/move', data);
-};
-
-// ============ HELPER FUNCTIONS ============
-
-export const downloadReport = async (type, format = 'json', dateRange = {}) => {
-    try {
-        let url = '';
-        if (type === 'efda') {
-            url = `/reports/efda?format=${format}`;
-            if (dateRange.start_date) url += `&start_date=${dateRange.start_date}`;
-            if (dateRange.end_date) url += `&end_date=${dateRange.end_date}`;
-        } else if (type === 'inventory') {
-            url = `/reports/inventory?format=${format}`;
-        }
-        
-        const response = await api.get(url, { responseType: 'blob' });
-        
-        const blob = new Blob([response.data], { 
-            type: format === 'csv' ? 'text/csv' : 'application/json' 
-        });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${type}_report_${Date.now()}.${format}`;
-        link.click();
-        
-        return true;
-    } catch (error) {
-        console.error('Download failed:', error);
-        throw error;
-    }
 };
 
 export default api;
