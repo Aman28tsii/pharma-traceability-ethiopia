@@ -670,20 +670,18 @@ app.post('/api/test-password', async (req, res) => {
         }
         
         const user = result.rows[0];
-        const bcrypt = await import('bcryptjs');
+        // Use the bcrypt that's already imported at the top
         const isValid = await bcrypt.compare(password, user.password);
         
         res.json({
             email: user.email,
-            password_hash: user.password.substring(0, 20) + '...',
-            password_entered: password,
-            is_valid: isValid
+            is_valid: isValid,
+            message: isValid ? 'Password works!' : 'Invalid password'
         });
     } catch (err) {
         res.json({ error: err.message });
     }
 });
-
 // ============ START SERVER ============
 app.listen(PORT, () => {
     console.log(`\n🚀 Server running on http://localhost:${PORT}`);
