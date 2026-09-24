@@ -89,7 +89,7 @@ const requireRole = (roles) => {
 
 // ============ AUTH ROUTES ============
 
-// LOGIN - FIXED VERSION (Works with 'admin123')
+// LOGIN
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     
@@ -106,19 +106,7 @@ app.post('/api/auth/login', async (req, res) => {
         
         const user = result.rows[0];
         
-        // FIX: Try bcrypt compare, if fails, check plain text 'admin123'
-        let valid = false;
-        try {
-            valid = await bcrypt.compare(password, user.password);
-        } catch (bcryptError) {
-            console.log('bcrypt error, trying plain comparison');
-        }
-        
-        // Fallback for 'admin123' password
-        if (!valid && password === 'admin123' && user.email === 'admin@pharma.com') {
-            valid = true;
-            console.log('✅ Using fallback password verification for admin');
-        }
+        const valid = await bcrypt.compare(password, user.password);
         
         if (!valid) {
             return res.status(401).json({ error: 'Invalid credentials' });
