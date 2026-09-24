@@ -48,7 +48,25 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // Middleware
-app.use(cors());
+// Middleware
+const ALLOWED_ORIGINS = [
+    'https://fili-pharma-traceability-ethiopia.onrender.com',
+    'http://localhost:3000',
+    'http://localhost:5000',
+];
+
+app.use(cors({
+    origin: (origin, callback) => {
+        // Allow non-browser requests (curl, server-to-server, mobile) that send no Origin header
+        if (!origin) return callback(null, true);
+        if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+        return callback(new Error('CORS: origin not allowed'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+}));
+
 app.use(express.json());
 app.use('/api/import', importRoutes);
 
