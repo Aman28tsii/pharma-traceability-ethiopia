@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'pharma_secret';
+const JWT_SECRET = process.env.JWT_SECRET;
 
 export const login = async (req, res) => {
   try {

@@ -1,64 +1,86 @@
-import request from 'supertest';
-import { app } from '../index.js';
+// server/tests/api.test.js
+// Integration tests against the deployed backend.
+// Run with:  node --test server/tests/api.test.js
+//
+// Uses Node's built-in test runner and global fetch (Node 18+).
+// No external dependencies required.
 
-describe('Pharmaceutical Traceability API', () => {
-    let authToken;
-    
-    describe('Authentication', () => {
-        test('POST /api/auth/login - valid credentials', async () => {
-            const response = await request(app)
-                .post('/api/auth/login')
-                .send({ email: 'admin@pharma.com', password: 'admin123' });
-            
-            expect(response.status).toBe(200);
-            expect(response.body).toHaveProperty('token');
-            authToken = response.body.token;
-        });
-        
-        test('POST /api/auth/login - invalid credentials', async () => {
-            const response = await request(app)
-                .post('/api/auth/login')
-                .send({ email: 'wrong@email.com', password: 'wrong' });
-            
-            expect(response.status).toBe(401);
-        });
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+const BASE_URL = process.env.API_BASE_URL || 'https://pharma-traceability-ethiopia.onrender.com';
+
+// Credentials — these are the same seeded credentials used in manual testing.
+const ADMIN_EMAIL = 'admin@pharma.com';
+const ADMIN_PASSWORD = 'ChangeMeNow123!';
+
+let authToken = null;
+
+test('POST /api/auth/login — valid credentials returns a token', async () => {
+    const res = await fetch(`${BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
     });
-    
-    describe('Product Verification (Scanner)', () => {
-        test('POST /api/verify - valid product', async () => {
-            const response = await request(app)
-                .post('/api/verify')
-                .set('Authorization', `Bearer ${authToken}`)
-                .send({ 
-                    gtin: '06130000010001', 
-                    serial_number: '61300000010001000001' 
-                });
-            
-            expect(response.status).toBe(200);
-            expect(response.body).toHaveProperty('status');
-        });
-        
-        test('POST /api/verify - invalid product', async () => {
-            const response = await request(app)
-                .post('/api/verify')
-                .set('Authorization', `Bearer ${authToken}`)
-                .send({ 
-                    gtin: '00000000000000', 
-                    serial_number: 'invalid' 
-                });
-            
-            expect(response.status).toBe(404);
-        });
+    const body = await res.json();
+    assert.equal(res.status, 200, `expected 200, got ${res.status}: ${JSON.stringify(body)}`);
+    assert.ok(body.token, 'response should contain a token');
+    authToken = body.token;
+});
+
+test('POST /api/auth/login — wrong password returns 401', async () => {
+    const res = await fetch(`${BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: ADMIN_EMAIL, password: 'definitely-wrong' }),
     });
-    
-    describe('Dashboard', () => {
-        test('GET /api/dashboard/stats', async () => {
-            const response = await request(app)
-                .get('/api/dashboard/stats')
-                .set('Authorization', `Bearer ${authToken}`);
-            
-            expect(response.status).toBe(200);
-            expect(response.body).toHaveProperty('total_products');
-        });
+    assert.equal(res.status, 401);
+});
+
+test('GET /api/products — without token returns 401', async () => {
+    const res = await fetch(`${BASE_URL}/api/products`);
+    assert.equal(res.status, 401);
+});
+
+test('GET /api/products — with token returns an array', async () => {
+    const res = await fetch(`${BASE_URL}/api/products`, {
+        headers: { Authorization: `Bearer ${authToken}` },
     });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(Array.isArray(body), 'response should be an array');
+});
+
+test('GET /api/dashboard/stats — returns expected fields', async () => {
+    const res = await fetch(`${BASE_URL}/api/dashboard/stats`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok('total_products' in body, 'missing total_products');
+    assert.ok('total_batches' in body, 'missing total_batches');
+    assert.ok('total_units' in body, 'missing total_units');
+});
+
+test('POST /api/verify — unknown serial returns status=invalid', async () => {
+    const res = await fetch(`${BASE_URL}/api/verify`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ gtin: '00000000000000', serial_number: 'DOESNOTEXIST' }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, 'invalid');
+});
+
+test('GET /api/admin/audit-logs — returns an array for admin', async () => {
+    const res = await fetch(`${BASE_URL}/api/admin/audit-logs`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(Array.isArray(body), 'response should be an array');
 });

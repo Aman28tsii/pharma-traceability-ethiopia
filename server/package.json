@@ -2,14 +2,16 @@
   "name": "pharma-traceability-backend",
   "version": "1.0.0",
   "description": "EFDA Pharmaceutical Traceability System",
-  "main": "server.js",
+  "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
+    "build": "echo \"No build step required for backend\" && exit 0",
     "dev": "nodemon index.js",
     "start:local": "NODE_ENV=development node index.js",
-    "start:prod": "NODE_ENV=production node index.js"
-},
+    "start:prod": "NODE_ENV=production node index.js",
+    "test": "node --test tests/*.test.js"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
