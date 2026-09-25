@@ -12,6 +12,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import importRoutes from './routes/import.routes.js';
 import { logAction } from './middleware/audit.js';
+import platformRoutes from './routes/platform.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,6 +90,7 @@ const loginLimiter = rateLimit({
 
 app.use(express.json());
 app.use('/api/import', importRoutes);
+app.use('/api/platform', platformRoutes);
 
 // Phase 8: startup connect with retry/backoff so Neon cold-starts do not leave
 // the service stuck. Server starts listening regardless; queries retry on demand.
