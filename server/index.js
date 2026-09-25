@@ -1568,26 +1568,53 @@ app.get('/api/trace/batch/:batchNumber', auth, async (req, res) => {
 app.get('/api/reports/efda', auth, requireRole(['admin', 'auditor']), async (req, res) => {
     const { format = 'json', start_date, end_date } = req.query;
     const orgId = req.user.organization_id;
-    
+
     try {
+        // Event-centric: one row per trace_events row, scoped to the caller's branch.
+        // Batch-level events (serial_number IS NULL) obtain product/batch info via batches.
+        // Per-unit events obtain product/batch info via serialized_units. No LEFT JOIN
+        // from serialized_units means no row multiplication.
         let query = `
-            SELECT 
-                su.gtin, 
-                su.serial_number, 
-                su.batch_number, 
-                su.expiry_date, 
-                su.status,
-                p.product_name,
+            SELECT
+                te.id                                              AS event_id,
                 te.event_type,
-                te.created_at as event_date
-            FROM serialized_units su
-            JOIN products p ON su.gtin = p.gtin
-            LEFT JOIN trace_events te ON su.serial_number = te.serial_number
-            WHERE su.organization_id = $1
+                te.created_at                                      AS event_date,
+                te.serial_number,
+                COALESCE(te.batch_number, su.batch_number)         AS batch_number,
+                COALESCE(su.gtin, p_batch.gtin)                    AS gtin,
+                COALESCE(p_unit.product_name, p_batch.product_name) AS product_name,
+                COALESCE(p_unit.manufacturer, p_batch.manufacturer) AS manufacturer,
+                COALESCE(p_unit.strength, p_batch.strength)         AS strength,
+                b.expiry_date,
+                b.status                                           AS batch_status,
+                b.is_recalled,
+                te.from_gln,
+                te.to_gln,
+                te.location,
+                te.event_data,
+                u.name                                             AS performed_by_name,
+                u.email                                            AS performed_by_email,
+                te.organization_id
+            FROM trace_events te
+            LEFT JOIN users u
+                   ON te.user_id = u.id
+            LEFT JOIN serialized_units su
+                   ON te.serial_number = su.serial_number
+                  AND su.organization_id = te.organization_id
+            LEFT JOIN batches b
+                   ON b.batch_number = COALESCE(te.batch_number, su.batch_number)
+                  AND b.organization_id = te.organization_id
+            LEFT JOIN products p_unit
+                   ON p_unit.gtin = su.gtin
+                  AND p_unit.organization_id = te.organization_id
+            LEFT JOIN products p_batch
+                   ON p_batch.id = b.product_id
+                  AND p_batch.organization_id = te.organization_id
+            WHERE te.organization_id = $1
         `;
         const params = [orgId];
         let paramCount = 2;
-        
+
         if (start_date) {
             query += ` AND te.created_at >= $${paramCount}`;
             params.push(start_date);
@@ -1598,25 +1625,40 @@ app.get('/api/reports/efda', auth, requireRole(['admin', 'auditor']), async (req
             params.push(end_date);
             paramCount++;
         }
-        
+
         query += ` ORDER BY te.created_at DESC`;
-        
+
         const result = await pool.query(query, params);
-        
+
         if (format === 'csv') {
-            let csv = 'GTIN,Serial Number,Batch Number,Expiry Date,Status,Product Name,Event Type,Event Date\n';
+            const headers = [
+                'event_id', 'event_type', 'event_date', 'serial_number', 'batch_number',
+                'gtin', 'product_name', 'manufacturer', 'strength', 'expiry_date',
+                'batch_status', 'is_recalled', 'from_gln', 'to_gln', 'location',
+                'event_data', 'performed_by_name', 'performed_by_email', 'organization_id',
+            ];
+            const csvEscape = (v) => {
+                if (v === null || v === undefined) return '';
+                const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+                // quote if contains comma, quote, newline
+                if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            };
+            let csv = headers.join(',') + '\n';
             for (const row of result.rows) {
-                csv += `${row.gtin},${row.serial_number},${row.batch_number},${row.expiry_date},${row.status},${row.product_name || ''},${row.event_type || ''},${row.event_date || ''}\n`;
+                csv += headers.map(h => csvEscape(row[h])).join(',') + '\n';
             }
             res.setHeader('Content-Type', 'text/csv');
             res.setHeader('Content-Disposition', `attachment; filename=efda-report-${Date.now()}.csv`);
             return res.send(csv);
         }
-        
-        res.json({ 
-            report_date: new Date().toISOString(), 
-            total_records: result.rows.length, 
-            data: result.rows 
+
+        res.json({
+            report_date: new Date().toISOString(),
+            total_records: result.rows.length,
+            data: result.rows,
         });
     } catch (err) {
         console.error('Report generation error:', err);
