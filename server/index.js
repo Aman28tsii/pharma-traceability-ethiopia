@@ -1,6 +1,9 @@
 // server/index.js - COMPLETE WORKING VERSION (All features preserved)
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -48,7 +51,10 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // Middleware
-// Middleware
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+
 const ALLOWED_ORIGINS = [
     'https://fili-pharma-traceability-ethiopia.onrender.com',
     'http://localhost:3000',
@@ -57,7 +63,6 @@ const ALLOWED_ORIGINS = [
 
 app.use(cors({
     origin: (origin, callback) => {
-        // Allow non-browser requests (curl, server-to-server, mobile) that send no Origin header
         if (!origin) return callback(null, true);
         if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
         return callback(new Error('CORS: origin not allowed'));
@@ -66,6 +71,14 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
 }));
+
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+});
 
 app.use(express.json());
 app.use('/api/import', importRoutes);
@@ -108,7 +121,7 @@ const requireRole = (roles) => {
 // ============ AUTH ROUTES ============
 
 // LOGIN
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
     const { email, password } = req.body;
     
     if (!email || !password) {
