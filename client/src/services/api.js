@@ -161,4 +161,37 @@ export const getInventoryReport = () => {
     return api.get('/reports/inventory');
 };
 
+// ============ STOCK APIS ============
+export const getStockSummary = () => {
+    return api.get('/stock/summary');
+};
+
+export const getStockMovements = (params) => {
+    return api.get('/stock/movements', { params });
+};
+
+export const receiveStock = (data) => {
+    return api.post('/stock/receive', data);
+};
+
+export const transferStock = (data) => {
+    return api.post('/stock/transfer', data);
+};
+
+export const dispenseStock = (data) => {
+    return api.post('/stock/dispense', data);
+};
+
+export const returnStock = (data) => {
+    return api.post('/stock/return', data);
+};
+
+export const adjustStock = (data) => {
+    return api.post('/stock/adjust', data);
+};
+
+export const getBranches = () => {
+    return api.get('/branches');
+};
+
 export default api;

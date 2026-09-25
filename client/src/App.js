@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import Scanner from './pages/Scanner';
 import Products from './pages/Products';
 import Batches from './pages/Batches';
+import Stock from './pages/Stock';
 import Recalls from './pages/Recalls';
 import Reports from './pages/Reports';
 import UserManagement from './pages/Admin/Users';
@@ -49,6 +50,13 @@ function AppContent() {
                 <PrivateRoute>
                     <Layout>
                         <Batches />
+                    </Layout>
+                </PrivateRoute>
+            } />
+            <Route path="/stock" element={
+                <PrivateRoute>
+                    <Layout>
+                        <Stock />
                     </Layout>
                 </PrivateRoute>
             } />

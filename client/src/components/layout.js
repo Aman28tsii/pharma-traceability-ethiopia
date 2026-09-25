@@ -2,7 +2,7 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { Menu, X, LayoutDashboard, Scan, Package, Layers, AlertTriangle, FileText, Users, LogOut, Shield, Sun, Moon, Activity } from 'lucide-react';
+import { Menu, X, LayoutDashboard, Scan, Package, Layers, AlertTriangle, FileText, Users, LogOut, Shield, Sun, Moon, Activity, Boxes } from 'lucide-react';
 
 const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -17,6 +17,7 @@ const Layout = ({ children }) => {
     { path: '/scanner', icon: Scan, label: 'Scanner', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
     { path: '/products', icon: Package, label: 'Products', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
     { path: '/batches', icon: Layers, label: 'Batches', roles: ['admin', 'importer'] },
+    { path: '/stock', icon: Boxes, label: 'Stock', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
     { path: '/recalls', icon: AlertTriangle, label: 'Recalls', roles: ['admin', 'importer', 'distributor', 'pharmacy'] },
     { path: '/reports', icon: FileText, label: 'Reports', roles: ['admin', 'auditor'] },
     { path: '/admin/users', icon: Users, label: 'Users', roles: ['admin'] },
