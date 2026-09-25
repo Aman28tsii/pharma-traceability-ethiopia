@@ -1,4 +1,4 @@
-// server/index.js - COMPLETE WORKING VERSION (All features preserved)
+// server/index.js - Phase 3 tenant-scoped version
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -93,20 +93,45 @@ pool.connect((err, client, release) => {
     }
 });
 
-// Auth middleware
-const auth = (req, res, next) => {
+// ============ AUTH MIDDLEWARE ============
+// Verifies the JWT, then loads organization_id and location_id from the DB.
+// Never trusts organization_id or location_id from the token itself.
+const auth = async (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) {
         return res.status(401).json({ error: 'No token provided' });
     }
-    
-    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ error: 'Invalid or expired token' });
+
+    let decoded;
+    try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+        return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+
+    try {
+        const result = await pool.query(
+            'SELECT id, email, role, name, gln, organization_id, location_id, is_active FROM users WHERE id = $1',
+            [decoded.id]
+        );
+        if (result.rows.length === 0 || !result.rows[0].is_active) {
+            return res.status(403).json({ error: 'Account not found or inactive' });
         }
-        req.user = user;
+        const user = result.rows[0];
+        req.user = {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            name: user.name,
+            gln: user.gln,
+            organization_id: user.organization_id,
+            location_id: user.location_id,
+        };
         next();
-    });
+    } catch (err) {
+        console.error('Auth lookup error:', err);
+        return res.status(500).json({ error: 'Auth lookup failed' });
+    }
 };
 
 const requireRole = (roles) => {
@@ -177,10 +202,10 @@ app.post('/api/auth/register', auth, requireRole(['admin']), async (req, res) =>
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
         const result = await pool.query(
-            `INSERT INTO users (name, email, password, role, gln, is_active) 
-             VALUES ($1, $2, $3, $4, $5, true) 
-             RETURNING id, name, email, role, gln`,
-            [name, email.toLowerCase(), hashedPassword, role, gln || null]
+            `INSERT INTO users (name, email, password, role, gln, is_active, organization_id, location_id) 
+             VALUES ($1, $2, $3, $4, $5, true, $6, $7) 
+             RETURNING id, name, email, role, gln, organization_id, location_id`,
+            [name, email.toLowerCase(), hashedPassword, role, gln || null, req.user.organization_id, req.user.location_id]
         );
         res.status(201).json({ success: true, user: result.rows[0] });
     } catch (err) {
@@ -198,7 +223,8 @@ app.post('/api/auth/register', auth, requireRole(['admin']), async (req, res) =>
 app.get('/api/admin/users', auth, requireRole(['admin']), async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, name, email, role, gln, is_active, created_at FROM users ORDER BY created_at DESC'
+            'SELECT id, name, email, role, gln, is_active, created_at FROM users WHERE organization_id = $1 ORDER BY created_at DESC',
+            [req.user.organization_id]
         );
         res.json(result.rows);
     } catch (err) {
@@ -211,8 +237,8 @@ app.put('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res) =
     const { role, is_active } = req.body;
     try {
         const result = await pool.query(
-            'UPDATE users SET role = $1, is_active = $2 WHERE id = $3 RETURNING id, name, email, role, is_active',
-            [role, is_active, req.params.id]
+            'UPDATE users SET role = $1, is_active = $2 WHERE id = $3 AND organization_id = $4 RETURNING id, name, email, role, is_active',
+            [role, is_active, req.params.id, req.user.organization_id]
         );
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
@@ -226,7 +252,10 @@ app.put('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res) =
 
 app.delete('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res) => {
     try {
-        const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id', [req.params.id]);
+        const result = await pool.query(
+            'DELETE FROM users WHERE id = $1 AND organization_id = $2 RETURNING id',
+            [req.params.id, req.user.organization_id]
+        );
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -241,11 +270,30 @@ app.delete('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res
 
 app.get('/api/products', auth, async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM products ORDER BY created_at DESC');
+        const result = await pool.query(
+            'SELECT * FROM products WHERE organization_id = $1 ORDER BY created_at DESC',
+            [req.user.organization_id]
+        );
         res.json(result.rows);
     } catch (err) {
         console.error('Fetch products error:', err);
         res.status(500).json({ error: 'Failed to fetch products' });
+    }
+});
+
+app.get('/api/products/:id', auth, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM products WHERE id = $1 AND organization_id = $2',
+            [req.params.id, req.user.organization_id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Fetch product error:', err);
+        res.status(500).json({ error: 'Failed to fetch product' });
     }
 });
 
@@ -258,10 +306,10 @@ app.post('/api/products', auth, requireRole(['admin', 'importer']), async (req, 
     
     try {
         const result = await pool.query(
-            `INSERT INTO products (gtin, product_name, manufacturer, strength, created_by) 
-             VALUES ($1, $2, $3, $4, $5) 
+            `INSERT INTO products (gtin, product_name, manufacturer, strength, created_by, organization_id) 
+             VALUES ($1, $2, $3, $4, $5, $6) 
              RETURNING *`,
-            [gtin, product_name, manufacturer || null, strength || null, req.user.id]
+            [gtin, product_name, manufacturer || null, strength || null, req.user.id, req.user.organization_id]
         );
         res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -283,9 +331,9 @@ app.put('/api/products/:id', auth, requireRole(['admin', 'importer']), async (re
              SET product_name = COALESCE($1, product_name),
                  manufacturer = COALESCE($2, manufacturer),
                  strength = COALESCE($3, strength)
-             WHERE id = $4
+             WHERE id = $4 AND organization_id = $5
              RETURNING *`,
-            [product_name, manufacturer, strength, req.params.id]
+            [product_name, manufacturer, strength, req.params.id, req.user.organization_id]
         );
         
         if (result.rows.length === 0) {
@@ -300,7 +348,10 @@ app.put('/api/products/:id', auth, requireRole(['admin', 'importer']), async (re
 
 app.delete('/api/products/:id', auth, requireRole(['admin', 'importer']), async (req, res) => {
     try {
-        const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING id', [req.params.id]);
+        const result = await pool.query(
+            'DELETE FROM products WHERE id = $1 AND organization_id = $2 RETURNING id',
+            [req.params.id, req.user.organization_id]
+        );
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Product not found' });
         }
@@ -321,8 +372,10 @@ app.get('/api/batches', auth, async (req, res) => {
              FROM batches b
              JOIN products p ON b.product_id = p.id
              LEFT JOIN serialized_units su ON su.batch_number = b.batch_number
+             WHERE b.organization_id = $1
              GROUP BY b.id, p.product_name, p.gtin
-             ORDER BY b.created_at DESC`
+             ORDER BY b.created_at DESC`,
+            [req.user.organization_id]
         );
         res.json(result.rows);
     } catch (err) {
@@ -342,7 +395,10 @@ app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, r
     try {
         await client.query('BEGIN');
         
-        const productResult = await client.query('SELECT gtin, product_name FROM products WHERE id = $1', [product_id]);
+        const productResult = await client.query(
+            'SELECT gtin, product_name FROM products WHERE id = $1 AND organization_id = $2',
+            [product_id, req.user.organization_id]
+        );
         if (productResult.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Product not found' });
@@ -351,20 +407,20 @@ app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, r
         const product = productResult.rows[0];
         
         const batchResult = await client.query(
-            `INSERT INTO batches (batch_number, product_id, expiry_date, quantity, created_by) 
-             VALUES ($1, $2, $3, $4, $5) 
+            `INSERT INTO batches (batch_number, product_id, expiry_date, quantity, created_by, organization_id, location_id) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7) 
              RETURNING *`,
-            [batch_number, product_id, expiry_date, quantity, req.user.id]
+            [batch_number, product_id, expiry_date, quantity, req.user.id, req.user.organization_id, req.user.location_id]
         );
         
         const serialUnits = [];
         for (let i = 1; i <= quantity; i++) {
             const serialNumber = `${product.gtin.slice(-6)}${batch_number.slice(0, 4)}${String(i).padStart(8, '0')}`;
             const unitResult = await client.query(
-                `INSERT INTO serialized_units (gtin, serial_number, batch_number, expiry_date, status) 
-                 VALUES ($1, $2, $3, $4, 'active') 
+                `INSERT INTO serialized_units (gtin, serial_number, batch_number, expiry_date, status, organization_id, location_id) 
+                 VALUES ($1, $2, $3, $4, 'active', $5, $6) 
                  RETURNING *`,
-                [product.gtin, serialNumber, batch_number, expiry_date]
+                [product.gtin, serialNumber, batch_number, expiry_date, req.user.organization_id, req.user.location_id]
             );
             serialUnits.push(unitResult.rows[0]);
         }
@@ -398,8 +454,8 @@ app.post('/api/verify', auth, async (req, res) => {
             `SELECT su.*, p.product_name, p.manufacturer, p.strength
              FROM serialized_units su
              JOIN products p ON su.gtin = p.gtin
-             WHERE su.serial_number = $1 AND su.gtin = $2`,
-            [serial_number, gtin]
+             WHERE su.serial_number = $1 AND su.gtin = $2 AND su.organization_id = $3`,
+            [serial_number, gtin, req.user.organization_id]
         );
         
         if (result.rows.length === 0) {
@@ -430,9 +486,9 @@ app.post('/api/verify', auth, async (req, res) => {
         }
         
         await pool.query(
-            `INSERT INTO trace_events (serial_number, event_type, user_id) 
-             VALUES ($1, $2, $3)`,
-            [serial_number, 'verify', req.user.id]
+            `INSERT INTO trace_events (serial_number, event_type, user_id, organization_id, location_id) 
+             VALUES ($1, $2, $3, $4, $5)`,
+            [serial_number, 'verify', req.user.id, req.user.organization_id, req.user.location_id]
         );
         
         res.json({
@@ -457,6 +513,7 @@ app.post('/api/verify', auth, async (req, res) => {
 // ============ DASHBOARD ROUTES ============
 
 app.get('/api/dashboard/stats', auth, async (req, res) => {
+    const orgId = req.user.organization_id;
     try {
         let totalProducts = 0;
         let totalBatches = 0;
@@ -467,37 +524,37 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
         let expiringSoon = 0;
         
         try {
-            const result = await pool.query('SELECT COUNT(*) as count FROM products');
+            const result = await pool.query('SELECT COUNT(*) as count FROM products WHERE organization_id = $1', [orgId]);
             totalProducts = parseInt(result.rows[0]?.count || 0);
         } catch (e) { console.log('Products count error:', e.message); }
         
         try {
-            const result = await pool.query('SELECT COUNT(*) as count FROM batches');
+            const result = await pool.query('SELECT COUNT(*) as count FROM batches WHERE organization_id = $1', [orgId]);
             totalBatches = parseInt(result.rows[0]?.count || 0);
         } catch (e) { console.log('Batches count error:', e.message); }
         
         try {
-            const result = await pool.query('SELECT COUNT(*) as count FROM serialized_units');
+            const result = await pool.query('SELECT COUNT(*) as count FROM serialized_units WHERE organization_id = $1', [orgId]);
             totalUnits = parseInt(result.rows[0]?.count || 0);
         } catch (e) { console.log('Units count error:', e.message); }
         
         try {
-            const result = await pool.query('SELECT COUNT(*) as count FROM users WHERE is_active = true');
+            const result = await pool.query('SELECT COUNT(*) as count FROM users WHERE is_active = true AND organization_id = $1', [orgId]);
             totalUsers = parseInt(result.rows[0]?.count || 0);
         } catch (e) { console.log('Users count error:', e.message); }
         
         try {
-            const result = await pool.query("SELECT COUNT(*) as count FROM trace_events WHERE created_at >= NOW() - INTERVAL '30 days'");
+            const result = await pool.query("SELECT COUNT(*) as count FROM trace_events WHERE organization_id = $1 AND created_at >= NOW() - INTERVAL '30 days'", [orgId]);
             scansLast30Days = parseInt(result.rows[0]?.count || 0);
         } catch (e) { console.log('Scans count error:', e.message); }
         
         try {
-            const result = await pool.query('SELECT COUNT(*) as count FROM serialized_units WHERE expiry_date < NOW()');
+            const result = await pool.query('SELECT COUNT(*) as count FROM serialized_units WHERE organization_id = $1 AND expiry_date < NOW()', [orgId]);
             expiredUnits = parseInt(result.rows[0]?.count || 0);
         } catch (e) { console.log('Expired count error:', e.message); }
         
         try {
-            const result = await pool.query("SELECT COUNT(*) as count FROM serialized_units WHERE expiry_date BETWEEN NOW() AND NOW() + INTERVAL '30 days'");
+            const result = await pool.query("SELECT COUNT(*) as count FROM serialized_units WHERE organization_id = $1 AND expiry_date BETWEEN NOW() AND NOW() + INTERVAL '30 days'", [orgId]);
             expiringSoon = parseInt(result.rows[0]?.count || 0);
         } catch (e) { console.log('Expiring count error:', e.message); }
         
@@ -517,7 +574,7 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
             total_products: 0,
             total_batches: 0,
             total_units: 0,
-            total_users: 1,
+            total_users: 0,
             scans_last_30_days: 0,
             expired_units: 0,
             expiring_soon: 0,
@@ -540,9 +597,10 @@ app.get('/api/dashboard/recent-activity', auth, async (req, res) => {
             LEFT JOIN users u ON te.user_id = u.id
             LEFT JOIN serialized_units su ON te.serial_number = su.serial_number
             LEFT JOIN products p ON su.gtin = p.gtin
+            WHERE te.organization_id = $1
             ORDER BY te.created_at DESC
             LIMIT 20
-        `);
+        `, [req.user.organization_id]);
         res.json(result.rows || []);
     } catch (err) {
         console.error('Recent activity error:', err);
@@ -564,9 +622,10 @@ app.get('/api/dashboard/expiry-alerts', auth, async (req, res) => {
             FROM serialized_units su
             JOIN products p ON su.gtin = p.gtin
             WHERE su.expiry_date <= NOW() + INTERVAL '90 days'
+              AND su.organization_id = $1
             ORDER BY su.expiry_date ASC
             LIMIT 50
-        `);
+        `, [req.user.organization_id]);
         res.json(result.rows || []);
     } catch (err) {
         console.error('Expiry alerts error:', err);
@@ -582,8 +641,9 @@ app.get('/api/recalls', auth, async (req, res) => {
             SELECT r.*, u.name as initiated_by_name
             FROM recalls r
             LEFT JOIN users u ON r.created_by = u.id
+            WHERE r.organization_id = $1
             ORDER BY r.created_at DESC
-        `);
+        `, [req.user.organization_id]);
         res.json(result.rows || []);
     } catch (err) {
         console.error('Fetch recalls error:', err);
@@ -599,11 +659,19 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
     }
     
     try {
+        const batchCheck = await pool.query(
+            'SELECT id FROM batches WHERE batch_number = $1 AND organization_id = $2',
+            [batch_number, req.user.organization_id]
+        );
+        if (batchCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Batch not found' });
+        }
+        
         const result = await pool.query(
-            `INSERT INTO recalls (batch_number, reason, severity, instructions, status, initiated_date, created_by) 
-             VALUES ($1, $2, $3, $4, 'active', CURRENT_DATE, $5) 
+            `INSERT INTO recalls (batch_number, reason, severity, instructions, status, initiated_date, created_by, organization_id) 
+             VALUES ($1, $2, $3, $4, 'active', CURRENT_DATE, $5, $6) 
              RETURNING *`,
-            [batch_number, recall_reason, recall_level, instructions || null, req.user.id]
+            [batch_number, recall_reason, recall_level, instructions || null, req.user.id, req.user.organization_id]
         );
         
         res.status(201).json(result.rows[0]);
@@ -617,6 +685,7 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
 
 app.get('/api/reports/efda', auth, requireRole(['admin', 'auditor']), async (req, res) => {
     const { format = 'json', start_date, end_date } = req.query;
+    const orgId = req.user.organization_id;
     
     try {
         let query = `
@@ -632,10 +701,10 @@ app.get('/api/reports/efda', auth, requireRole(['admin', 'auditor']), async (req
             FROM serialized_units su
             JOIN products p ON su.gtin = p.gtin
             LEFT JOIN trace_events te ON su.serial_number = te.serial_number
-            WHERE 1=1
+            WHERE su.organization_id = $1
         `;
-        const params = [];
-        let paramCount = 1;
+        const params = [orgId];
+        let paramCount = 2;
         
         if (start_date) {
             query += ` AND te.created_at >= $${paramCount}`;
