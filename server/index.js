@@ -1,4 +1,4 @@
-// server/index.js - Phase 5A branch endpoint + enveloped stock summary
+// server/index.js - Phase 6 traceability version
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -523,6 +523,28 @@ app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, r
             serialUnits.push(unitResult.rows[0]);
         }
         
+        // Phase 6: write one manufacture trace event per serialized unit.
+        // Bulk insert with unnest — one round trip regardless of batch size.
+        if (serialUnits.length > 0) {
+            const serialNumbers = serialUnits.map(u => u.serial_number);
+            await client.query(
+                `INSERT INTO trace_events
+                    (serial_number, event_type, to_gln, location, user_id,
+                     organization_id, location_id, batch_number)
+                 SELECT s, 'manufacture', $2, $3, $4, $5, $6, $7
+                 FROM unnest($1::text[]) AS s`,
+                [
+                    serialNumbers,
+                    req.user.gln || null,
+                    null,
+                    req.user.id,
+                    req.user.organization_id,
+                    req.user.location_id,
+                    batch_number,
+                ]
+            );
+        }
+        
         await client.query('COMMIT');
         await logAction(pool, {
             userId: req.user.id,
@@ -605,9 +627,17 @@ app.post('/api/verify', auth, async (req, res) => {
         
         if (status !== 'invalid') {
             await pool.query(
-                `INSERT INTO trace_events (serial_number, event_type, user_id, organization_id, location_id) 
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [serial_number, 'verify', req.user.id, req.user.organization_id, req.user.location_id]
+                `INSERT INTO trace_events
+                    (serial_number, event_type, user_id, organization_id, location_id, batch_number) 
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [serial_number, 'verify', req.user.id, req.user.organization_id, req.user.location_id, unit.batch_number]
+            );
+            await pool.query(
+                `UPDATE serialized_units
+                 SET last_scanned_at = NOW(),
+                     current_owner_gln = COALESCE(current_owner_gln, $1)
+                 WHERE id = $2`,
+                [req.user.gln, unit.id]
             );
         }
         
@@ -777,17 +807,24 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
     if (!batch_number || !recall_reason) {
         return res.status(400).json({ error: 'Batch number and recall reason required' });
     }
-    
+
+    const client = await pool.connect();
     try {
-        const batchCheck = await pool.query(
-            'SELECT id FROM batches WHERE batch_number = $1 AND organization_id = $2',
+        await client.query('BEGIN');
+
+        const batchCheck = await client.query(
+            `SELECT b.id, b.batch_number, b.on_hand_quantity, p.gtin
+             FROM batches b JOIN products p ON b.product_id = p.id
+             WHERE b.batch_number = $1 AND b.organization_id = $2`,
             [batch_number, req.user.organization_id]
         );
         if (batchCheck.rows.length === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Batch not found' });
         }
-        
-        const result = await pool.query(
+        const rb = batchCheck.rows[0];
+
+        const result = await client.query(
             `INSERT INTO recalls (batch_number, reason, severity, instructions, status, initiated_date, created_by, organization_id) 
              VALUES ($1, $2, $3, $4, 'active', CURRENT_DATE, $5, $6) 
              RETURNING *`,
@@ -795,28 +832,50 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
         );
 
         // Zero out batch on_hand_quantity and record the recall as a stock movement.
-        const recallBatch = await pool.query(
-            `SELECT b.id, b.batch_number, b.on_hand_quantity, p.gtin
-             FROM batches b JOIN products p ON b.product_id = p.id
-             WHERE b.batch_number = $1 AND b.organization_id = $2`,
-            [batch_number, req.user.organization_id]
-        );
-        if (recallBatch.rows.length > 0 && recallBatch.rows[0].on_hand_quantity !== 0) {
-            const rb = recallBatch.rows[0];
-            await pool.query(
+        if (rb.on_hand_quantity !== 0) {
+            await client.query(
                 `INSERT INTO stock_movements
                     (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
                      reference_type, reference_id, notes, performed_by)
                  VALUES ($1, $2, $3, $4, 'recall', $5, 'recall', $6, $7, $8)`,
-                [req.user.organization_id, rb.id, rb.batch_number, rb.gtin, -rb.on_hand_quantity,
+                [req.user.organization_id, rb.id, batch_number, rb.gtin, -rb.on_hand_quantity,
                  result.rows[0].id, `Recall: ${recall_reason}`, req.user.id]
             );
-            await pool.query(
-                `UPDATE batches SET on_hand_quantity = 0, is_recalled = true, status = 'recalled', updated_at = NOW()
-                 WHERE id = $1`,
-                [rb.id]
-            );
         }
+        await client.query(
+            `UPDATE batches SET on_hand_quantity = 0, is_recalled = true, status = 'recalled', updated_at = NOW()
+             WHERE id = $1`,
+            [rb.id]
+        );
+
+        // Phase 6: mark unsold units as recalled. Do not touch sold units — their history is preserved.
+        await client.query(
+            `UPDATE serialized_units
+             SET status = 'recalled', updated_at = NOW()
+             WHERE batch_number = $1 AND organization_id = $2 AND status <> 'sold'`,
+            [batch_number, req.user.organization_id]
+        );
+
+        // Phase 6: batch-level recall trace event.
+        await client.query(
+            `INSERT INTO trace_events
+                (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
+             VALUES (NULL, 'recall', $1, $2, $3, $4, $5)`,
+            [
+                req.user.id,
+                req.user.organization_id,
+                req.user.location_id,
+                batch_number,
+                JSON.stringify({
+                    reason: recall_reason,
+                    severity: recall_level,
+                    quantity_removed: rb.on_hand_quantity,
+                    recall_id: result.rows[0].id,
+                }),
+            ]
+        );
+
+        await client.query('COMMIT');
 
         await logAction(pool, {
             userId: req.user.id,
@@ -829,8 +888,11 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
         });
         res.status(201).json(result.rows[0]);
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error('Create recall error:', err);
         res.status(500).json({ error: 'Failed to create recall' });
+    } finally {
+        client.release();
     }
 });
 
@@ -871,6 +933,20 @@ app.post('/api/stock/receive', auth, requireRole(['admin', 'importer']), async (
         await client.query(
             'UPDATE batches SET on_hand_quantity = on_hand_quantity + $1, updated_at = NOW() WHERE id = $2',
             [quantity, b.id]
+        );
+
+        // Phase 6: batch-level receive trace event.
+        await client.query(
+            `INSERT INTO trace_events
+                (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
+             VALUES (NULL, 'receive', $1, $2, $3, $4, $5)`,
+            [
+                req.user.id,
+                req.user.organization_id,
+                req.user.location_id,
+                b.batch_number,
+                JSON.stringify({ quantity, counterparty: counterparty || null, notes: notes || null }),
+            ]
         );
 
         await client.query('COMMIT');
@@ -1003,6 +1079,41 @@ app.post('/api/stock/transfer', auth, requireRole(['admin', 'importer', 'distrib
             );
         }
 
+        // Phase 6: paired transfer trace events, one per branch.
+        const outEvent = await client.query(
+            `INSERT INTO trace_events
+                (serial_number, event_type, user_id, organization_id, location_id, batch_number, to_gln, event_data)
+             VALUES (NULL, 'transfer_out', $1, $2, $3, $4, $5, $6)
+             RETURNING id`,
+            [
+                req.user.id,
+                req.user.organization_id,
+                req.user.location_id,
+                source.batch_number,
+                null,
+                JSON.stringify({ quantity, to_organization_id: Number(to_organization_id), notes: notes || null }),
+            ]
+        );
+
+        await client.query(
+            `INSERT INTO trace_events
+                (serial_number, event_type, user_id, organization_id, location_id, batch_number, from_gln, event_data)
+             VALUES (NULL, 'transfer_in', $1, $2, $3, $4, $5, $6)`,
+            [
+                req.user.id,
+                to_organization_id,
+                null,
+                source.batch_number,
+                null,
+                JSON.stringify({
+                    quantity,
+                    from_organization_id: req.user.organization_id,
+                    parent_event_id: outEvent.rows[0].id,
+                    notes: notes || null,
+                }),
+            ]
+        );
+
         await client.query('COMMIT');
 
         await logAction(pool, {
@@ -1070,8 +1181,13 @@ app.post('/api/stock/dispense', auth, requireRole(['admin', 'pharmacy']), async 
                 return res.status(400).json({ error: 'Serialized unit is recalled' });
             }
             await client.query(
-                `UPDATE serialized_units SET status = 'sold', updated_at = NOW() WHERE id = $1`,
-                [unitRes.rows[0].id]
+                `UPDATE serialized_units
+                 SET status = 'sold',
+                     last_scanned_at = NOW(),
+                     current_owner_gln = COALESCE(current_owner_gln, $2),
+                     updated_at = NOW()
+                 WHERE id = $1`,
+                [unitRes.rows[0].id, req.user.gln]
             );
         }
 
@@ -1088,6 +1204,26 @@ app.post('/api/stock/dispense', auth, requireRole(['admin', 'pharmacy']), async 
         await client.query(
             'UPDATE batches SET on_hand_quantity = on_hand_quantity - $1, updated_at = NOW() WHERE id = $2',
             [quantity, batch.id]
+        );
+
+        // Phase 6: batch-level dispense trace event.
+        await client.query(
+            `INSERT INTO trace_events
+                (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
+             VALUES ($1, 'dispense', $2, $3, $4, $5, $6)`,
+            [
+                serial_number || null,
+                req.user.id,
+                req.user.organization_id,
+                req.user.location_id,
+                batch.batch_number,
+                JSON.stringify({
+                    quantity,
+                    counterparty: counterparty || null,
+                    notes: notes || null,
+                    serial_number: serial_number || null,
+                }),
+            ]
         );
 
         await client.query('COMMIT');
@@ -1152,6 +1288,20 @@ app.post('/api/stock/return', auth, requireRole(['admin', 'importer']), async (r
             [quantity, batch.id]
         );
 
+        // Phase 6: batch-level return trace event.
+        await client.query(
+            `INSERT INTO trace_events
+                (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
+             VALUES (NULL, 'return_supplier', $1, $2, $3, $4, $5)`,
+            [
+                req.user.id,
+                req.user.organization_id,
+                req.user.location_id,
+                batch.batch_number,
+                JSON.stringify({ quantity, counterparty: counterparty || null, notes: notes || null }),
+            ]
+        );
+
         await client.query('COMMIT');
         await logAction(pool, {
             userId: req.user.id,
@@ -1210,6 +1360,20 @@ app.post('/api/stock/adjust', auth, requireRole(['admin', 'importer']), async (r
         await client.query(
             'UPDATE batches SET on_hand_quantity = on_hand_quantity + $1, updated_at = NOW() WHERE id = $2',
             [quantity_delta, batch.id]
+        );
+
+        // Phase 6: batch-level adjust trace event.
+        await client.query(
+            `INSERT INTO trace_events
+                (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
+             VALUES (NULL, 'adjustment', $1, $2, $3, $4, $5)`,
+            [
+                req.user.id,
+                req.user.organization_id,
+                req.user.location_id,
+                batch.batch_number,
+                JSON.stringify({ quantity_delta, reason: reason || null, notes: notes || null }),
+            ]
         );
 
         await client.query('COMMIT');
@@ -1308,7 +1472,6 @@ app.get('/api/stock/summary', auth, async (req, res) => {
 // ============ BRANCH ROUTES ============
 
 // GET /api/branches — list of OTHER branches (organizations) in the same company.
-// Used by the transfer form to populate the destination picker.
 app.get('/api/branches', auth, async (req, res) => {
     try {
         const result = await pool.query(
@@ -1321,6 +1484,79 @@ app.get('/api/branches', auth, async (req, res) => {
     } catch (err) {
         console.error('Fetch branches error:', err);
         res.status(500).json({ error: 'Failed to fetch branches' });
+    }
+});
+
+// ============ TRACE ROUTES ============
+
+// GET /api/trace/serial/:serialNumber — full timeline for one serialized unit
+app.get('/api/trace/serial/:serialNumber', auth, async (req, res) => {
+    try {
+        const { serialNumber } = req.params;
+
+        const unitCheck = await pool.query(
+            `SELECT id, batch_number FROM serialized_units
+             WHERE serial_number = $1 AND organization_id = $2`,
+            [serialNumber, req.user.organization_id]
+        );
+        if (unitCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Serial not found' });
+        }
+
+        const result = await pool.query(
+            `SELECT te.id, te.event_type, te.from_gln, te.to_gln, te.location,
+                    te.event_data, te.created_at, te.batch_number,
+                    u.name AS user_name
+             FROM trace_events te
+             LEFT JOIN users u ON te.user_id = u.id
+             WHERE te.serial_number = $1 AND te.organization_id = $2
+             ORDER BY te.created_at ASC`,
+            [serialNumber, req.user.organization_id]
+        );
+
+        res.json({
+            serial_number: serialNumber,
+            batch_number: unitCheck.rows[0].batch_number,
+            events: result.rows,
+        });
+    } catch (err) {
+        console.error('Fetch serial trace error:', err);
+        res.status(500).json({ error: 'Failed to fetch trace' });
+    }
+});
+
+// GET /api/trace/batch/:batchNumber — all trace events for a batch (batch-level + per-unit)
+app.get('/api/trace/batch/:batchNumber', auth, async (req, res) => {
+    try {
+        const { batchNumber } = req.params;
+
+        const batchCheck = await pool.query(
+            `SELECT id FROM batches
+             WHERE batch_number = $1 AND organization_id = $2`,
+            [batchNumber, req.user.organization_id]
+        );
+        if (batchCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Batch not found' });
+        }
+
+        const result = await pool.query(
+            `SELECT te.id, te.event_type, te.serial_number, te.from_gln, te.to_gln,
+                    te.location, te.event_data, te.created_at,
+                    u.name AS user_name
+             FROM trace_events te
+             LEFT JOIN users u ON te.user_id = u.id
+             WHERE te.batch_number = $1 AND te.organization_id = $2
+             ORDER BY te.created_at ASC`,
+            [batchNumber, req.user.organization_id]
+        );
+
+        res.json({
+            batch_number: batchNumber,
+            events: result.rows,
+        });
+    } catch (err) {
+        console.error('Fetch batch trace error:', err);
+        res.status(500).json({ error: 'Failed to fetch trace' });
     }
 });
 
@@ -1422,6 +1658,8 @@ app.listen(PORT, () => {
     console.log(`   GET  /api/stock/movements`);
     console.log(`   GET  /api/stock/summary`);
     console.log(`   GET  /api/branches`);
+    console.log(`   GET  /api/trace/serial/:serialNumber`);
+    console.log(`   GET  /api/trace/batch/:batchNumber`);
     console.log(`   GET  /api/reports/efda`);
     console.log(`   GET  /api/admin/users`);
     console.log(`   GET  /api/admin/audit-logs`);
