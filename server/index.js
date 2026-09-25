@@ -987,7 +987,7 @@ app.post('/api/stock/transfer', auth, requireRole(['admin', 'importer', 'distrib
             [quantity, destBatchId]
         );
 
-               // Move up to `quantity` non-sold serialized units of this batch to the destination branch.
+        // Move up to `quantity` non-sold serialized units of this batch to the destination branch.
         const unitIdsRes = await client.query(
             `SELECT id FROM serialized_units
              WHERE batch_number = $1 AND organization_id = $2 AND status <> 'sold'
