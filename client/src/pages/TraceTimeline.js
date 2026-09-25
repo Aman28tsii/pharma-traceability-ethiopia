@@ -1,9 +1,9 @@
-// client/src/pages/TraceTimeline.js - Phase 6 traceability timeline
+﻿// client/src/pages/TraceTimeline.js - Phase 6 traceability timeline
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Search, RefreshCw, History, Boxes, MapPin,
-    ArrowRight, User as UserIcon, AlertTriangle, CheckCircle
+    ArrowRight, User as UserIcon, AlertTriangle, CheckCircle, X, X
 } from 'lucide-react';
 import api from '../services/api';
 import Card, { CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -13,8 +13,8 @@ import { PageLoader } from '../components/ui/LoadingSpinner';
 import EmptyState from '../components/ui/EmptyState';
 
 // ---------- helpers ----------
-const fmtDateTime = (d) => d ? new Date(d).toLocaleString() : '—';
-const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
+const fmtDateTime = (d) => d ? new Date(d).toLocaleString() : 'â€”';
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : 'â€”';
 
 const eventLabel = {
     manufacture: 'Manufacture',
@@ -82,9 +82,9 @@ const EventItem = ({ event, showSerial }) => {
                     </div>
                     {(event.from_gln || event.to_gln) && (
                         <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1 mt-1">
-                            <span>{event.from_gln || '—'}</span>
+                            <span>{event.from_gln || 'â€”'}</span>
                             <ArrowRight className="w-3 h-3" />
-                            <span>{event.to_gln || '—'}</span>
+                            <span>{event.to_gln || 'â€”'}</span>
                         </div>
                     )}
                     {event.location && (
