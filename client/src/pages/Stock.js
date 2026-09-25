@@ -1,5 +1,6 @@
-// client/src/pages/Stock.js - Phase 5B Stock / Inventory page
+﻿// client/src/pages/Stock.js - Phase 7: adds batch trace link
 import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import {
     Package, Search, RefreshCw, ArrowDownToLine, ArrowUpFromLine,
     RotateCcw, Sliders, ArrowLeftRight, X, AlertTriangle, CheckCircle,
@@ -23,8 +24,8 @@ import { PageLoader } from '../components/ui/LoadingSpinner';
 import EmptyState from '../components/ui/EmptyState';
 
 // ---------- helpers ----------
-const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
-const fmtDateTime = (d) => d ? new Date(d).toLocaleString() : '—';
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '-';
+const fmtDateTime = (d) => d ? new Date(d).toLocaleString() : '-';
 const movementLabel = {
     initial: 'Initial',
     receive: 'Receive',
@@ -103,7 +104,6 @@ const ActionModal = ({ action, batch, branches, onClose, onSuccess }) => {
         e.preventDefault();
         setError('');
 
-        // client-side validation (server also validates)
         const base = { batch_id: batch.batch_id, notes: form.notes || undefined };
 
         let payload;
@@ -173,7 +173,7 @@ const ActionModal = ({ action, batch, branches, onClose, onSuccess }) => {
                         {batch.product_name}
                     </p>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                        Batch {batch.batch_number} · Expires {fmtDate(batch.expiry_date)}
+                        Batch {batch.batch_number} - Expires {fmtDate(batch.expiry_date)}
                     </p>
                     <p className="text-sm mt-2 text-gray-700 dark:text-gray-300">
                         Current on-hand: <span className="font-bold">{batch.on_hand_quantity}</span>
@@ -358,7 +358,6 @@ const Stock = () => {
             const res = await getBranches();
             setBranches(res.data);
         } catch (err) {
-            // non-fatal; transfer form will just be empty
             setBranches([]);
         }
     };
@@ -508,6 +507,13 @@ const Stock = () => {
                                             <td className="py-3 px-4 text-right font-semibold text-gray-900 dark:text-white">{b.on_hand_quantity}</td>
                                             <td className="py-3 px-4">
                                                 <div className="flex gap-1 justify-end flex-wrap">
+                                                    <Link
+                                                        to={`/trace/batch/${encodeURIComponent(b.batch_number)}`}
+                                                        className="p-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+                                                        title="View full trace history"
+                                                    >
+                                                        <History className="w-4 h-4" />
+                                                    </Link>
                                                     {canReceiveOrReturnOrAdjust && (
                                                         <button
                                                             onClick={() => openAction(b, 'receive')}
@@ -627,7 +633,7 @@ const Stock = () => {
                                         <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Time</th>
                                         <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Type</th>
                                         <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Batch</th>
-                                        <th className="text-right py-3 px-4 text-gray-600 dark:text-gray-400">Qty Δ</th>
+                                        <th className="text-right py-3 px-4 text-gray-600 dark:text-gray-400">Qty</th>
                                         <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Reference</th>
                                         <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">By</th>
                                     </tr>
@@ -648,11 +654,11 @@ const Stock = () => {
                                                 {m.quantity_delta >= 0 ? '+' : ''}{m.quantity_delta}
                                             </td>
                                             <td className="py-2 px-4 text-xs text-gray-500 dark:text-gray-400">
-                                                {m.counterparty || m.reference_type || '—'}
+                                                {m.counterparty || m.reference_type || '-'}
                                                 {m.notes && <div className="text-gray-400 italic">{m.notes}</div>}
                                             </td>
                                             <td className="py-2 px-4 text-xs text-gray-500 dark:text-gray-400">
-                                                {m.performed_by_name || '—'}
+                                                {m.performed_by_name || '-'}
                                             </td>
                                         </tr>
                                     ))}

@@ -1,395 +1,686 @@
-import React, { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { BrowserMultiFormatReader } from '@zxing/library';
-import { verifyProduct } from '../services/api';
-import { useOffline } from '../contexts/OfflineContext';
-import { 
-  Camera, 
-  CheckCircle, 
-  XCircle, 
-  AlertTriangle, 
-  Scan, 
-  Package,
-  Edit3,
-  ArrowLeft
+// client/src/pages/Stock.js - Phase 7: adds batch trace link
+import React, { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import {
+    Package, Search, RefreshCw, ArrowDownToLine, ArrowUpFromLine,
+    RotateCcw, Sliders, ArrowLeftRight, X, AlertTriangle, CheckCircle,
+    History, Boxes, Eye
 } from 'lucide-react';
-import Card from '../components/ui/Card';
+import { useAuth } from '../contexts/AuthContext';
+import {
+    getStockSummary,
+    getStockMovements,
+    getBranches,
+    receiveStock,
+    transferStock,
+    dispenseStock,
+    returnStock,
+    adjustStock,
+} from '../services/api';
+import Card, { CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
+import { PageLoader } from '../components/ui/LoadingSpinner';
+import EmptyState from '../components/ui/EmptyState';
 
-const Scanner = () => {
-  const [scanning, setScanning] = useState(false);
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [manualMode, setManualMode] = useState(false);
-  const [manualGtin, setManualGtin] = useState('');
-  const [manualSerial, setManualSerial] = useState('');
-  const [cameraError, setCameraError] = useState(null);
-  const videoRef = useRef(null);
-  const readerRef = useRef(null);
-  const navigate = useNavigate();
-  const { isOffline, addToQueue } = useOffline();
-
-  // Vibrate on scan result
-  const vibrate = () => {
-    if (window.navigator && window.navigator.vibrate) {
-      window.navigator.vibrate(200);
-    }
-  };
-
-  const startScanner = async () => {
-    try {
-      setScanning(true);
-      setResult(null);
-      setCameraError(null);
-      
-      const codeReader = new BrowserMultiFormatReader();
-      readerRef.current = codeReader;
-      
-      const devices = await codeReader.listVideoInputDevices();
-      
-      if (devices.length === 0) {
-        throw new Error('No camera found');
-      }
-      
-      const backCamera = devices.find(d => 
-        d.label.toLowerCase().includes('back') || 
-        d.label.toLowerCase().includes('rear')
-      ) || devices[0];
-      
-      await codeReader.decodeFromVideoDevice(backCamera.deviceId, videoRef.current, (result, err) => {
-        if (result) {
-          handleScan(result.getText());
-          stopScanner();
-        }
-      });
-    } catch (err) {
-      console.error('Scanner error:', err);
-      setCameraError('Failed to start camera. Please use manual entry.');
-      setManualMode(true);
-      setScanning(false);
-    }
-  };
-
-  const stopScanner = () => {
-    if (readerRef.current) {
-      readerRef.current.reset();
-      readerRef.current = null;
-    }
-    setScanning(false);
-  };
-
-  const handleManualSubmit = async (e) => {
-    e.preventDefault();
-    if (!manualGtin || !manualSerial) {
-      alert('Please enter both GTIN and Serial Number');
-      return;
-    }
-    await handleVerification(manualGtin, manualSerial);
-  };
-
-  const handleScan = async (scannedData) => {
-    try {
-      const gtinMatch = scannedData.match(/\(01\)(\d{14})/);
-      const serialMatch = scannedData.match(/\(21\)([^(]+)/);
-      
-      if (!gtinMatch || !serialMatch) {
-        throw new Error('Invalid GS1 barcode format');
-      }
-      
-      const gtin = gtinMatch[1];
-      const serial = serialMatch[1].trim();
-      
-      await handleVerification(gtin, serial);
-    } catch (err) {
-      setResult({
-        status: 'error',
-        message: err.message || 'Invalid barcode format',
-        product: null
-      });
-      vibrate();
-    }
-  };
-
-  const handleVerification = async (gtin, serial) => {
-    setLoading(true);
-    
-    try {
-      if (isOffline) {
-        addToQueue({
-          action: 'verify',
-          payload: { gtin, serial_number: serial },
-          timestamp: new Date().toISOString()
-        });
-        setResult({
-          status: 'pending',
-          message: '📱 Offline Mode - Will verify when online',
-          product: null
-        });
-        vibrate();
-        setLoading(false);
-        return;
-      }
-      
-      const response = await verifyProduct({ gtin, serial_number: serial });
-      setResult(response.data);
-      vibrate();
-    } catch (err) {
-      setResult({
-        status: 'error',
-        message: err.response?.data?.message || 'Verification failed',
-        product: null
-      });
-      vibrate();
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const getResultStyles = () => {
-    if (!result) return {};
-    switch(result.status) {
-      case 'valid':
-        return {
-          bg: 'bg-gradient-to-br from-green-500 to-green-600',
-          icon: <CheckCircle className="w-20 h-20 text-white" />,
-          title: 'Product Verified',
-          subtitle: 'Authentic Product'
-        };
-      case 'expired':
-        return {
-          bg: 'bg-gradient-to-br from-red-500 to-red-600',
-          icon: <XCircle className="w-20 h-20 text-white" />,
-          title: 'Product Expired',
-          subtitle: 'Do Not Use'
-        };
-      case 'warning':
-        return {
-          bg: 'bg-gradient-to-br from-yellow-500 to-yellow-600',
-          icon: <AlertTriangle className="w-20 h-20 text-white" />,
-          title: 'Expiring Soon',
-          subtitle: 'Check Expiry Date'
-        };
-      case 'recalled':
-        return {
-          bg: 'bg-gradient-to-br from-red-700 to-red-800',
-          icon: <XCircle className="w-20 h-20 text-white" />,
-          title: 'Product Recalled',
-          subtitle: 'URGENT - Do Not Use'
-        };
-      default:
-        return {
-          bg: 'bg-gray-500',
-          icon: <Scan className="w-20 h-20 text-white" />,
-          title: 'Invalid Product',
-          subtitle: 'Not Found in System'
-        };
-    }
-  };
-
-  return (
-    <div className="max-w-lg mx-auto">
-      {/* Header with back button */}
-      <div className="mb-6">
-        <button 
-          onClick={() => navigate('/dashboard')}
-          className="flex items-center gap-2 text-gray-600 hover:text-blue-600 transition mb-4"
-        >
-          <ArrowLeft className="w-5 h-5" />
-          Back to Dashboard
-        </button>
-        <h1 className="text-2xl font-bold text-gray-900">Product Scanner</h1>
-        <p className="text-gray-500 mt-1">Scan GS1 DataMatrix barcode to verify authenticity</p>
-      </div>
-
-      {/* Main Scanner Interface */}
-      {!scanning && !result && !manualMode && (
-        <div className="space-y-4">
-          <Card className="text-center py-12">
-            <div className="inline-flex p-6 bg-blue-50 rounded-full mb-6">
-              <Scan className="w-12 h-12 text-blue-600" />
-            </div>
-            <h2 className="text-xl font-semibold mb-2">Ready to Scan</h2>
-            <p className="text-gray-500 mb-8">
-              Position the barcode within the camera frame
-            </p>
-            <Button onClick={startScanner} size="lg" fullWidth icon={Camera}>
-              Start Camera
-            </Button>
-            <Button 
-              onClick={() => setManualMode(true)} 
-              variant="outline" 
-              fullWidth 
-              className="mt-3"
-              icon={Edit3}
-            >
-              Enter Manually
-            </Button>
-          </Card>
-
-          {cameraError && (
-            <Card className="bg-yellow-50 border-yellow-200">
-              <p className="text-yellow-800 text-sm">{cameraError}</p>
-            </Card>
-          )}
-
-          <Card className="bg-blue-50 border-blue-100">
-            <h3 className="font-semibold text-blue-800 mb-2">Tips for best results:</h3>
-            <ul className="text-sm text-blue-700 space-y-1">
-              <li>• Ensure good lighting</li>
-              <li>• Hold phone steady</li>
-              <li>• Center barcode in frame</li>
-            </ul>
-          </Card>
-        </div>
-      )}
-
-      {/* Manual Entry Form */}
-      {manualMode && !scanning && !result && (
-        <Card>
-          <h2 className="text-xl font-semibold mb-4">Manual Entry</h2>
-          <form onSubmit={handleManualSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                GTIN (14 digits)
-              </label>
-              <input
-                type="text"
-                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                placeholder="06130000010001"
-                maxLength="14"
-                value={manualGtin}
-                onChange={(e) => setManualGtin(e.target.value)}
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Serial Number
-              </label>
-              <input
-                type="text"
-                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-                placeholder="Enter serial number"
-                value={manualSerial}
-                onChange={(e) => setManualSerial(e.target.value)}
-                required
-              />
-            </div>
-            <div className="flex gap-3">
-              <Button type="submit" loading={loading} fullWidth>
-                Verify Product
-              </Button>
-              <Button 
-                type="button"
-                variant="outline"
-                onClick={() => setManualMode(false)}
-              >
-                Back
-              </Button>
-            </div>
-          </form>
-        </Card>
-      )}
-
-      {/* Verification Result */}
-      {result && (
-        <div className="space-y-4 animate-fade-in">
-          <div className={`${getResultStyles().bg} rounded-2xl p-8 text-center text-white`}>
-            {getResultStyles().icon}
-            <h2 className="text-2xl font-bold mt-4">{getResultStyles().title}</h2>
-            <p className="text-lg opacity-90 mt-1">{result.message}</p>
-            {result.status === 'warning' && result.product?.days_left && (
-              <p className="mt-2 text-sm opacity-80">
-                Expires in {result.product.days_left} days
-              </p>
-            )}
-          </div>
-
-          {result.product && (
-            <Card>
-              <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
-                <Package className="w-5 h-5 text-blue-600" />
-                Product Details
-              </h3>
-              <div className="space-y-3">
-                <div className="flex justify-between py-2 border-b border-gray-100">
-                  <span className="text-gray-600">Product Name:</span>
-                  <span className="font-medium">{result.product.name}</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-gray-100">
-                  <span className="text-gray-600">GTIN:</span>
-                  <span className="font-mono text-sm">{result.product.gtin}</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-gray-100">
-                  <span className="text-gray-600">Serial Number:</span>
-                  <span className="font-mono text-sm">{result.product.serial_number}</span>
-                </div>
-                <div className="flex justify-between py-2 border-b border-gray-100">
-                  <span className="text-gray-600">Batch:</span>
-                  <span>{result.product.batch}</span>
-                </div>
-                <div className="flex justify-between py-2">
-                  <span className="text-gray-600">Expiry Date:</span>
-                  <span className={result.product.days_left <= 30 ? 'text-red-600 font-semibold' : ''}>
-                    {new Date(result.product.expiry_date).toLocaleDateString()}
-                  </span>
-                </div>
-              </div>
-            </Card>
-          )}
-
-          <div className="flex gap-3">
-            <Button 
-              onClick={() => {
-                setResult(null);
-                setManualMode(false);
-              }} 
-              fullWidth
-              icon={Scan}
-            >
-              Scan Another
-            </Button>
-            <Button 
-              onClick={() => navigate('/dashboard')} 
-              variant="outline"
-            >
-              Dashboard
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Camera Overlay */}
-      {scanning && (
-        <div className="fixed inset-0 bg-black z-50">
-          <div className="relative h-full">
-            <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover" />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="border-4 border-green-400 w-80 h-80 rounded-2xl flex flex-col items-center justify-center bg-black bg-opacity-40">
-                <Scan className="w-12 h-12 text-green-400 mb-3 animate-pulse" />
-                <p className="text-white text-center font-medium">Align barcode inside frame</p>
-              </div>
-            </div>
-            <div className="absolute bottom-10 left-0 right-0 text-center">
-              <Button onClick={stopScanner} variant="danger" className="mx-auto">
-                Cancel
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Loading Overlay */}
-      {loading && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-            <p className="mt-4 font-medium">Verifying product...</p>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+// ---------- helpers ----------
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
+const fmtDateTime = (d) => d ? new Date(d).toLocaleString() : '—';
+const movementLabel = {
+    initial: 'Initial',
+    receive: 'Receive',
+    dispense: 'Dispense',
+    transfer_in: 'Transfer In',
+    transfer_out: 'Transfer Out',
+    return_supplier: 'Return',
+    adjustment: 'Adjust',
+    recall: 'Recall',
+};
+const movementColor = {
+    initial: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+    receive: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+    dispense: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+    transfer_in: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
+    transfer_out: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
+    return_supplier: 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300',
+    adjustment: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
+    recall: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
 };
 
-export default Scanner;
+// ---------- status pill ----------
+const BatchStatus = ({ batch }) => {
+    if (batch.is_recalled) return <Badge variant="danger">Recalled</Badge>;
+    if (batch.status === 'expired') return <Badge variant="warning">Expired</Badge>;
+    if (batch.on_hand_quantity === 0) return <Badge variant="default">Empty</Badge>;
+    return <Badge variant="success">Active</Badge>;
+};
+
+// ---------- inline banner ----------
+const Banner = ({ type, message, onClose }) => {
+    if (!message) return null;
+    const styles = type === 'success'
+        ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300 border-green-200 dark:border-green-800'
+        : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300 border-red-200 dark:border-red-800';
+    const Icon = type === 'success' ? CheckCircle : AlertTriangle;
+    return (
+        <div className={`mb-3 p-3 rounded-xl border flex items-start gap-2 ${styles}`}>
+            <Icon className="w-5 h-5 shrink-0 mt-0.5" />
+            <div className="flex-1 text-sm">{message}</div>
+            {onClose && (
+                <button onClick={onClose} className="shrink-0">
+                    <X className="w-4 h-4" />
+                </button>
+            )}
+        </div>
+    );
+};
+
+// ---------- action modal ----------
+const ActionModal = ({ action, batch, branches, onClose, onSuccess }) => {
+    const [form, setForm] = useState(() => ({
+        quantity: '',
+        quantity_delta: '',
+        to_organization_id: '',
+        counterparty: '',
+        notes: '',
+        reason: '',
+        serial_number: '',
+    }));
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState('');
+    const [confirmed, setConfirmed] = useState(false);
+
+    const isDestructive = ['dispense', 'return', 'adjust', 'transfer'].includes(action);
+
+    const title = {
+        receive: 'Receive Stock',
+        dispense: 'Dispense / Sell',
+        return: 'Return to Supplier',
+        adjust: 'Adjust Stock',
+        transfer: 'Transfer Stock',
+    }[action];
+
+    const submit = async (e) => {
+        e.preventDefault();
+        setError('');
+
+        const base = { batch_id: batch.batch_id, notes: form.notes || undefined };
+
+        let payload;
+        if (action === 'receive') {
+            const q = parseInt(form.quantity);
+            if (!q || q <= 0) return setError('Quantity must be a positive whole number.');
+            payload = { ...base, quantity: q, counterparty: form.counterparty || undefined };
+        } else if (action === 'dispense') {
+            const q = parseInt(form.quantity);
+            if (!q || q <= 0) return setError('Quantity must be a positive whole number.');
+            if (q > batch.on_hand_quantity) return setError(`Only ${batch.on_hand_quantity} units available.`);
+            payload = { ...base, quantity: q, counterparty: form.counterparty || undefined, serial_number: form.serial_number || undefined };
+        } else if (action === 'return') {
+            const q = parseInt(form.quantity);
+            if (!q || q <= 0) return setError('Quantity must be a positive whole number.');
+            if (q > batch.on_hand_quantity) return setError(`Only ${batch.on_hand_quantity} units available.`);
+            payload = { ...base, quantity: q, counterparty: form.counterparty || undefined };
+        } else if (action === 'adjust') {
+            const d = parseInt(form.quantity_delta);
+            if (!Number.isFinite(d) || d === 0) return setError('Adjustment must be a non-zero whole number.');
+            if (batch.on_hand_quantity + d < 0) return setError('Adjustment would drive stock below zero.');
+            payload = { ...base, quantity_delta: d, reason: form.reason || undefined };
+        } else if (action === 'transfer') {
+            const q = parseInt(form.quantity);
+            if (!q || q <= 0) return setError('Quantity must be a positive whole number.');
+            if (q > batch.on_hand_quantity) return setError(`Only ${batch.on_hand_quantity} units available.`);
+            if (!form.to_organization_id) return setError('Please select a destination branch.');
+            payload = { ...base, quantity: q, to_organization_id: parseInt(form.to_organization_id) };
+        }
+
+        if (isDestructive && !confirmed) {
+            return setError('Please confirm this operation before submitting.');
+        }
+
+        setSubmitting(true);
+        try {
+            const fn = {
+                receive: receiveStock,
+                dispense: dispenseStock,
+                return: returnStock,
+                adjust: adjustStock,
+                transfer: transferStock,
+            }[action];
+            await fn(payload);
+            onSuccess(`${title} completed.`);
+        } catch (err) {
+            const msg = err.response?.data?.error || err.message || 'Operation failed';
+            const available = err.response?.data?.available;
+            setError(available !== undefined ? `${msg} (available: ${available})` : msg);
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-70 flex items-center justify-center z-50 p-4">
+            <div className="bg-white dark:bg-gray-800 rounded-xl max-w-md w-full p-6">
+                <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-bold text-gray-900 dark:text-white">{title}</h2>
+                    <button onClick={onClose} className="text-gray-500 dark:text-gray-400" disabled={submitting}>
+                        <X className="w-6 h-6" />
+                    </button>
+                </div>
+
+                <div className="bg-gray-50 dark:bg-gray-700/50 p-3 rounded-lg mb-4">
+                    <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                        {batch.product_name}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Batch {batch.batch_number} · Expires {fmtDate(batch.expiry_date)}
+                    </p>
+                    <p className="text-sm mt-2 text-gray-700 dark:text-gray-300">
+                        Current on-hand: <span className="font-bold">{batch.on_hand_quantity}</span>
+                    </p>
+                </div>
+
+                <form onSubmit={submit} className="space-y-3">
+                    {(action === 'receive' || action === 'dispense' || action === 'return' || action === 'transfer') && (
+                        <div>
+                            <label className="label">Quantity *</label>
+                            <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                className="input"
+                                value={form.quantity}
+                                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+                                required
+                                disabled={submitting}
+                            />
+                        </div>
+                    )}
+
+                    {action === 'adjust' && (
+                        <div>
+                            <label className="label">Adjustment (positive or negative) *</label>
+                            <input
+                                type="number"
+                                step="1"
+                                className="input"
+                                placeholder="e.g. -5 for damage, +3 for found stock"
+                                value={form.quantity_delta}
+                                onChange={(e) => setForm({ ...form, quantity_delta: e.target.value })}
+                                required
+                                disabled={submitting}
+                            />
+                        </div>
+                    )}
+
+                    {action === 'transfer' && (
+                        <div>
+                            <label className="label">Destination Branch *</label>
+                            <select
+                                className="input"
+                                value={form.to_organization_id}
+                                onChange={(e) => setForm({ ...form, to_organization_id: e.target.value })}
+                                required
+                                disabled={submitting}
+                            >
+                                <option value="">-- Select a branch --</option>
+                                {branches.map((b) => (
+                                    <option key={b.id} value={b.id}>{b.name}</option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+
+                    {action === 'dispense' && (
+                        <div>
+                            <label className="label">Serial Number (optional)</label>
+                            <input
+                                type="text"
+                                className="input"
+                                placeholder="Leave blank for batch-only dispense"
+                                value={form.serial_number}
+                                onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
+                                disabled={submitting}
+                            />
+                        </div>
+                    )}
+
+                    {(action === 'receive' || action === 'dispense' || action === 'return') && (
+                        <div>
+                            <label className="label">
+                                {action === 'dispense' ? 'Patient / Reference' : 'Supplier / Counterparty'} (optional)
+                            </label>
+                            <input
+                                type="text"
+                                className="input"
+                                value={form.counterparty}
+                                onChange={(e) => setForm({ ...form, counterparty: e.target.value })}
+                                disabled={submitting}
+                            />
+                        </div>
+                    )}
+
+                    {action === 'adjust' && (
+                        <div>
+                            <label className="label">Reason (optional)</label>
+                            <input
+                                type="text"
+                                className="input"
+                                placeholder="damage / loss / correction"
+                                value={form.reason}
+                                onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                                disabled={submitting}
+                            />
+                        </div>
+                    )}
+
+                    <div>
+                        <label className="label">Notes (optional)</label>
+                        <input
+                            type="text"
+                            className="input"
+                            value={form.notes}
+                            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                            disabled={submitting}
+                        />
+                    </div>
+
+                    {isDestructive && (
+                        <label className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={confirmed}
+                                onChange={(e) => setConfirmed(e.target.checked)}
+                                className="mt-1"
+                                disabled={submitting}
+                            />
+                            <span className="text-xs text-amber-800 dark:text-amber-300">
+                                I confirm this action. It will be permanently recorded in the audit log.
+                            </span>
+                        </label>
+                    )}
+
+                    <Banner type="error" message={error} />
+
+                    <div className="flex gap-3 pt-2">
+                        <Button type="button" variant="outline" fullWidth onClick={onClose} disabled={submitting}>
+                            Cancel
+                        </Button>
+                        <Button type="submit" variant="primary" fullWidth loading={submitting}>
+                            Submit
+                        </Button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+// ---------- main page ----------
+const Stock = () => {
+    const { user } = useAuth();
+    const [tab, setTab] = useState('summary');
+    const [summary, setSummary] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState('');
+    const [search, setSearch] = useState('');
+
+    const [selectedBatch, setSelectedBatch] = useState(null);
+    const [action, setAction] = useState(null);
+    const [branches, setBranches] = useState([]);
+
+    const [movements, setMovements] = useState([]);
+    const [movementsLoading, setMovementsLoading] = useState(false);
+    const [movementFilters, setMovementFilters] = useState({ movement_type: '', batch_id: '' });
+
+    const canMutate = useMemo(() => ['admin', 'importer', 'distributor', 'pharmacy'].includes(user?.role), [user]);
+    const canTransfer = useMemo(() => ['admin', 'importer', 'distributor'].includes(user?.role), [user]);
+    const canReceiveOrReturnOrAdjust = useMemo(() => ['admin', 'importer'].includes(user?.role), [user]);
+    const canDispense = useMemo(() => ['admin', 'pharmacy'].includes(user?.role), [user]);
+
+    const loadSummary = async () => {
+        setLoading(true);
+        setError('');
+        try {
+            const res = await getStockSummary();
+            setSummary(res.data);
+        } catch (err) {
+            setError(err.response?.data?.error || err.message || 'Failed to load stock summary');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const loadBranches = async () => {
+        if (!canTransfer) return;
+        try {
+            const res = await getBranches();
+            setBranches(res.data);
+        } catch (err) {
+            setBranches([]);
+        }
+    };
+
+    const loadMovements = async () => {
+        setMovementsLoading(true);
+        try {
+            const params = {};
+            if (movementFilters.movement_type) params.movement_type = movementFilters.movement_type;
+            if (movementFilters.batch_id) params.batch_id = movementFilters.batch_id;
+            const res = await getStockMovements(params);
+            setMovements(res.data);
+        } catch (err) {
+            setError(err.response?.data?.error || err.message || 'Failed to load movements');
+        } finally {
+            setMovementsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadSummary();
+        loadBranches();
+    }, []);
+
+    useEffect(() => {
+        if (tab === 'movements') loadMovements();
+    }, [tab, movementFilters]);
+
+    useEffect(() => {
+        if (!success) return;
+        const t = setTimeout(() => setSuccess(''), 4000);
+        return () => clearTimeout(t);
+    }, [success]);
+
+    const filteredBatches = useMemo(() => {
+        if (!summary?.batches) return [];
+        const s = search.trim().toLowerCase();
+        if (!s) return summary.batches;
+        return summary.batches.filter(b =>
+            b.product_name?.toLowerCase().includes(s) ||
+            b.batch_number?.toLowerCase().includes(s) ||
+            b.gtin?.includes(s)
+        );
+    }, [summary, search]);
+
+    const openAction = (batch, kind) => {
+        setSelectedBatch(batch);
+        setAction(kind);
+    };
+
+    const closeAction = () => {
+        setSelectedBatch(null);
+        setAction(null);
+    };
+
+    const handleSuccess = (msg) => {
+        setSuccess(msg);
+        closeAction();
+        loadSummary();
+        if (tab === 'movements') loadMovements();
+    };
+
+    return (
+        <div className="space-y-4">
+            {/* Header */}
+            <div className="flex items-center justify-between flex-wrap gap-3">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                        <Boxes className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                        Stock / Inventory
+                    </h1>
+                    {summary?.branch && (
+                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                            Branch: <span className="font-medium text-gray-700 dark:text-gray-300">{summary.branch.name}</span>
+                        </p>
+                    )}
+                </div>
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => setTab('summary')}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'summary'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+                    >
+                        Summary
+                    </button>
+                    <button
+                        onClick={() => setTab('movements')}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1 ${tab === 'movements'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+                    >
+                        <History className="w-4 h-4" /> Movements
+                    </button>
+                </div>
+            </div>
+
+            <Banner type="success" message={success} onClose={() => setSuccess('')} />
+            <Banner type="error" message={error} onClose={() => setError('')} />
+
+            {/* Summary tab */}
+            {tab === 'summary' && (
+                <>
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <div className="relative flex-1 min-w-[240px]">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                            <input
+                                type="text"
+                                placeholder="Search product, batch, or GTIN..."
+                                className="w-full border border-gray-300 dark:border-gray-600 rounded-xl px-4 py-2 pl-10 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                            />
+                        </div>
+                        <Button variant="outline" size="sm" onClick={loadSummary} icon={RefreshCw}>
+                            Refresh
+                        </Button>
+                    </div>
+
+                    {loading ? (
+                        <PageLoader />
+                    ) : filteredBatches.length === 0 ? (
+                        <EmptyState title="No batches" description={search ? 'No batches match your search.' : 'No stock in this branch.'} />
+                    ) : (
+                        <Card padding={false} className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead className="border-b border-gray-200 dark:border-gray-700">
+                                    <tr>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Product</th>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Batch</th>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Expiry</th>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Status</th>
+                                        <th className="text-right py-3 px-4 text-gray-600 dark:text-gray-400">On hand</th>
+                                        <th className="text-right py-3 px-4 text-gray-600 dark:text-gray-400">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {filteredBatches.map((b) => (
+                                        <tr key={b.batch_id} className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                            <td className="py-3 px-4">
+                                                <div className="font-medium text-gray-900 dark:text-white">{b.product_name}</div>
+                                                <div className="text-xs text-gray-500 dark:text-gray-400 font-mono">{b.gtin}</div>
+                                            </td>
+                                            <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{b.batch_number}</td>
+                                            <td className="py-3 px-4 text-gray-700 dark:text-gray-300">{fmtDate(b.expiry_date)}</td>
+                                            <td className="py-3 px-4"><BatchStatus batch={b} /></td>
+                                            <td className="py-3 px-4 text-right font-semibold text-gray-900 dark:text-white">{b.on_hand_quantity}</td>
+                                            <td className="py-3 px-4">
+                                                <div className="flex gap-1 justify-end flex-wrap">
+                                                    <Link
+                                                        to={`/trace/batch/${encodeURIComponent(b.batch_number)}`}
+                                                        className="p-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
+                                                        title="View full trace history"
+                                                    >
+                                                        <History className="w-4 h-4" />
+                                                    </Link>
+                                                    {canReceiveOrReturnOrAdjust && (
+                                                        <button
+                                                            onClick={() => openAction(b, 'receive')}
+                                                            className="p-2 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded-lg"
+                                                            title="Receive"
+                                                            disabled={b.is_recalled}
+                                                        >
+                                                            <ArrowDownToLine className="w-4 h-4" />
+                                                        </button>
+                                                    )}
+                                                    {canDispense && (
+                                                        <button
+                                                            onClick={() => openAction(b, 'dispense')}
+                                                            className="p-2 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg disabled:opacity-30"
+                                                            title="Dispense"
+                                                            disabled={b.is_recalled || b.on_hand_quantity === 0}
+                                                        >
+                                                            <ArrowUpFromLine className="w-4 h-4" />
+                                                        </button>
+                                                    )}
+                                                    {canReceiveOrReturnOrAdjust && (
+                                                        <>
+                                                            <button
+                                                                onClick={() => openAction(b, 'return')}
+                                                                className="p-2 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20 rounded-lg disabled:opacity-30"
+                                                                title="Return to supplier"
+                                                                disabled={b.is_recalled || b.on_hand_quantity === 0}
+                                                            >
+                                                                <RotateCcw className="w-4 h-4" />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => openAction(b, 'adjust')}
+                                                                className="p-2 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg"
+                                                                title="Adjust"
+                                                                disabled={b.is_recalled}
+                                                            >
+                                                                <Sliders className="w-4 h-4" />
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                    {canTransfer && (
+                                                        <button
+                                                            onClick={() => openAction(b, 'transfer')}
+                                                            className="p-2 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg disabled:opacity-30"
+                                                            title="Transfer to another branch"
+                                                            disabled={b.is_recalled || b.on_hand_quantity === 0}
+                                                        >
+                                                            <ArrowLeftRight className="w-4 h-4" />
+                                                        </button>
+                                                    )}
+                                                    {!canMutate && (
+                                                        <span className="text-xs text-gray-400 flex items-center gap-1">
+                                                            <Eye className="w-3 h-3" /> Read only
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </Card>
+                    )}
+                </>
+            )}
+
+            {/* Movements tab */}
+            {tab === 'movements' && (
+                <>
+                    <Card>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                                <label className="label text-xs">Movement type</label>
+                                <select
+                                    className="input text-sm"
+                                    value={movementFilters.movement_type}
+                                    onChange={(e) => setMovementFilters({ ...movementFilters, movement_type: e.target.value })}
+                                >
+                                    <option value="">All</option>
+                                    <option value="initial">Initial</option>
+                                    <option value="receive">Receive</option>
+                                    <option value="dispense">Dispense</option>
+                                    <option value="transfer_in">Transfer In</option>
+                                    <option value="transfer_out">Transfer Out</option>
+                                    <option value="return_supplier">Return</option>
+                                    <option value="adjustment">Adjust</option>
+                                    <option value="recall">Recall</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="label text-xs">Batch ID</label>
+                                <input
+                                    type="number"
+                                    className="input text-sm"
+                                    placeholder="e.g. 1"
+                                    value={movementFilters.batch_id}
+                                    onChange={(e) => setMovementFilters({ ...movementFilters, batch_id: e.target.value })}
+                                />
+                            </div>
+                            <div className="flex items-end">
+                                <Button variant="outline" size="sm" onClick={loadMovements} icon={RefreshCw}>
+                                    Refresh
+                                </Button>
+                            </div>
+                        </div>
+                    </Card>
+
+                    {movementsLoading ? (
+                        <PageLoader />
+                    ) : movements.length === 0 ? (
+                        <EmptyState title="No movements" description="No stock movements match these filters." />
+                    ) : (
+                        <Card padding={false} className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead className="border-b border-gray-200 dark:border-gray-700">
+                                    <tr>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Time</th>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Type</th>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Batch</th>
+                                        <th className="text-right py-3 px-4 text-gray-600 dark:text-gray-400">Qty Δ</th>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">Reference</th>
+                                        <th className="text-left py-3 px-4 text-gray-600 dark:text-gray-400">By</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {movements.map((m) => (
+                                        <tr key={m.id} className="border-b border-gray-100 dark:border-gray-800">
+                                            <td className="py-2 px-4 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
+                                                {fmtDateTime(m.created_at)}
+                                            </td>
+                                            <td className="py-2 px-4">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${movementColor[m.movement_type] || ''}`}>
+                                                    {movementLabel[m.movement_type] || m.movement_type}
+                                                </span>
+                                            </td>
+                                            <td className="py-2 px-4 text-gray-700 dark:text-gray-300">{m.batch_number}</td>
+                                            <td className={`py-2 px-4 text-right font-medium ${m.quantity_delta >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                                {m.quantity_delta >= 0 ? '+' : ''}{m.quantity_delta}
+                                            </td>
+                                            <td className="py-2 px-4 text-xs text-gray-500 dark:text-gray-400">
+                                                {m.counterparty || m.reference_type || '—'}
+                                                {m.notes && <div className="text-gray-400 italic">{m.notes}</div>}
+                                            </td>
+                                            <td className="py-2 px-4 text-xs text-gray-500 dark:text-gray-400">
+                                                {m.performed_by_name || '—'}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </Card>
+                    )}
+                </>
+            )}
+
+            {/* Action modal */}
+            {action && selectedBatch && (
+                <ActionModal
+                    action={action}
+                    batch={selectedBatch}
+                    branches={branches}
+                    onClose={closeAction}
+                    onSuccess={handleSuccess}
+                />
+            )}
+        </div>
+    );
+};
+
+export default Stock;
