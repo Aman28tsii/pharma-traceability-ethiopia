@@ -1,4 +1,4 @@
-// server/index.js - Phase 3 tenant-scoped version
+// server/index.js - Phase 4A audit-logged version
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -11,6 +11,7 @@ import pg from 'pg';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import importRoutes from './routes/import.routes.js';
+import { logAction } from './middleware/audit.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -207,6 +208,15 @@ app.post('/api/auth/register', auth, requireRole(['admin']), async (req, res) =>
              RETURNING id, name, email, role, gln, organization_id, location_id`,
             [name, email.toLowerCase(), hashedPassword, role, gln || null, req.user.organization_id, req.user.location_id]
         );
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'CREATE',
+            entityType: 'user',
+            entityId: result.rows[0].id,
+            newData: result.rows[0],
+            ipAddress: req.ip,
+        });
         res.status(201).json({ success: true, user: result.rows[0] });
     } catch (err) {
         if (err.code === '23505') {
@@ -243,6 +253,15 @@ app.put('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res) =
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
         }
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'UPDATE',
+            entityType: 'user',
+            entityId: result.rows[0].id,
+            newData: result.rows[0],
+            ipAddress: req.ip,
+        });
         res.json(result.rows[0]);
     } catch (err) {
         console.error('Update user error:', err);
@@ -259,10 +278,64 @@ app.delete('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'User not found' });
         }
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'DELETE',
+            entityType: 'user',
+            entityId: result.rows[0].id,
+            ipAddress: req.ip,
+        });
         res.json({ message: 'User deleted successfully' });
     } catch (err) {
         console.error('Delete user error:', err);
         res.status(500).json({ error: 'Failed to delete user' });
+    }
+});
+
+// GET /api/admin/audit-logs — admin-only, branch-scoped
+app.get('/api/admin/audit-logs', auth, requireRole(['admin']), async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+        const offset = parseInt(req.query.offset) || 0;
+        const { action, user_id, start_date, end_date } = req.query;
+
+        const params = [req.user.organization_id];
+        let where = 'WHERE a.organization_id = $1';
+
+        if (action) {
+            params.push(action);
+            where += ` AND a.action = $${params.length}`;
+        }
+        if (user_id) {
+            params.push(user_id);
+            where += ` AND a.user_id = $${params.length}`;
+        }
+        if (start_date) {
+            params.push(start_date);
+            where += ` AND a.created_at >= $${params.length}`;
+        }
+        if (end_date) {
+            params.push(end_date);
+            where += ` AND a.created_at <= $${params.length}`;
+        }
+
+        params.push(limit, offset);
+
+        const result = await pool.query(
+            `SELECT a.*, u.name AS user_name, u.email AS user_email
+             FROM audit_logs a
+             LEFT JOIN users u ON a.user_id = u.id
+             ${where}
+             ORDER BY a.created_at DESC
+             LIMIT $${params.length - 1} OFFSET $${params.length}`,
+            params
+        );
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Fetch audit logs error:', err);
+        res.status(500).json({ error: 'Failed to fetch audit logs' });
     }
 });
 
@@ -311,6 +384,15 @@ app.post('/api/products', auth, requireRole(['admin', 'importer']), async (req, 
              RETURNING *`,
             [gtin, product_name, manufacturer || null, strength || null, req.user.id, req.user.organization_id]
         );
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'CREATE',
+            entityType: 'product',
+            entityId: result.rows[0].id,
+            newData: result.rows[0],
+            ipAddress: req.ip,
+        });
         res.status(201).json(result.rows[0]);
     } catch (err) {
         if (err.code === '23505') {
@@ -339,6 +421,15 @@ app.put('/api/products/:id', auth, requireRole(['admin', 'importer']), async (re
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Product not found' });
         }
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'UPDATE',
+            entityType: 'product',
+            entityId: result.rows[0].id,
+            newData: result.rows[0],
+            ipAddress: req.ip,
+        });
         res.json(result.rows[0]);
     } catch (err) {
         console.error('Update product error:', err);
@@ -355,6 +446,14 @@ app.delete('/api/products/:id', auth, requireRole(['admin', 'importer']), async 
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Product not found' });
         }
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'DELETE',
+            entityType: 'product',
+            entityId: result.rows[0].id,
+            ipAddress: req.ip,
+        });
         res.json({ message: 'Product deleted successfully' });
     } catch (err) {
         console.error('Delete product error:', err);
@@ -426,6 +525,15 @@ app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, r
         }
         
         await client.query('COMMIT');
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'CREATE',
+            entityType: 'batch',
+            entityId: batchResult.rows[0].id,
+            newData: { batch: batchResult.rows[0], serial_units_count: serialUnits.length },
+            ipAddress: req.ip,
+        });
         res.status(201).json({ 
             batch: batchResult.rows[0], 
             serial_units_count: serialUnits.length,
@@ -674,6 +782,15 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
             [batch_number, recall_reason, recall_level, instructions || null, req.user.id, req.user.organization_id]
         );
         
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'CREATE',
+            entityType: 'recall',
+            entityId: result.rows[0].id,
+            newData: result.rows[0],
+            ipAddress: req.ip,
+        });
         res.status(201).json(result.rows[0]);
     } catch (err) {
         console.error('Create recall error:', err);
@@ -773,5 +890,6 @@ app.listen(PORT, () => {
     console.log(`   POST /api/recalls`);
     console.log(`   GET  /api/reports/efda`);
     console.log(`   GET  /api/admin/users`);
+    console.log(`   GET  /api/admin/audit-logs`);
     console.log(`   GET  /health\n`);
 });
