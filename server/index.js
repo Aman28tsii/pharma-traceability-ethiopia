@@ -1,4 +1,4 @@
-// server/index.js - Phase 6 traceability version
+// server/index.js - Phase 8 reliability + hygiene
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -52,6 +52,11 @@ if (process.env.NODE_ENV === 'production') {
     });
 }
 
+// Phase 8: prevent unhandled pool errors from crashing the process on Neon cold-start
+pool.on('error', (err) => {
+    console.error('⚠️ Idle pool error (handled):', err.message);
+});
+
 // Middleware
 app.disable('x-powered-by');
 app.use(helmet());
@@ -85,15 +90,26 @@ const loginLimiter = rateLimit({
 app.use(express.json());
 app.use('/api/import', importRoutes);
 
-// Test database
-pool.connect((err, client, release) => {
-    if (err) {
-        console.error('❌ Database error:', err.message);
-    } else {
-        console.log('✅ Database connected');
-        release();
+// Phase 8: startup connect with retry/backoff so Neon cold-starts do not leave
+// the service stuck. Server starts listening regardless; queries retry on demand.
+const connectWithRetry = async (attempt = 1, maxAttempts = 5) => {
+    try {
+        const client = await pool.connect();
+        await client.query('SELECT 1 AS ok');
+        client.release();
+        console.log(`✅ Database connected (attempt ${attempt})`);
+    } catch (err) {
+        console.error(`❌ Database connection attempt ${attempt}/${maxAttempts} failed:`, err.message);
+        if (attempt < maxAttempts) {
+            const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+            console.log(`   Retrying in ${delay}ms...`);
+            setTimeout(() => connectWithRetry(attempt + 1, maxAttempts), delay);
+        } else {
+            console.error('❌ All database connection attempts failed. Server continues running; queries will retry on demand.');
+        }
     }
-});
+};
+connectWithRetry();
 
 // ============ AUTH MIDDLEWARE ============
 const auth = async (req, res, next) => {
@@ -524,7 +540,6 @@ app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, r
         }
         
         // Phase 6: write one manufacture trace event per serialized unit.
-        // Bulk insert with unnest — one round trip regardless of batch size.
         if (serialUnits.length > 0) {
             const serialNumbers = serialUnits.map(u => u.serial_number);
             await client.query(
@@ -831,7 +846,6 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
             [batch_number, recall_reason, recall_level, instructions || null, req.user.id, req.user.organization_id]
         );
 
-        // Zero out batch on_hand_quantity and record the recall as a stock movement.
         if (rb.on_hand_quantity !== 0) {
             await client.query(
                 `INSERT INTO stock_movements
@@ -848,7 +862,6 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
             [rb.id]
         );
 
-        // Phase 6: mark unsold units as recalled. Do not touch sold units — their history is preserved.
         await client.query(
             `UPDATE serialized_units
              SET status = 'recalled', updated_at = NOW()
@@ -856,7 +869,6 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
             [batch_number, req.user.organization_id]
         );
 
-        // Phase 6: batch-level recall trace event.
         await client.query(
             `INSERT INTO trace_events
                 (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
@@ -935,7 +947,6 @@ app.post('/api/stock/receive', auth, requireRole(['admin', 'importer']), async (
             [quantity, b.id]
         );
 
-        // Phase 6: batch-level receive trace event.
         await client.query(
             `INSERT INTO trace_events
                 (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
@@ -1064,7 +1075,6 @@ app.post('/api/stock/transfer', auth, requireRole(['admin', 'importer', 'distrib
             [quantity, destBatchId]
         );
 
-        // Move up to `quantity` non-sold serialized units of this batch to the destination branch.
         const unitIdsRes = await client.query(
             `SELECT id FROM serialized_units
              WHERE batch_number = $1 AND organization_id = $2 AND status <> 'sold'
@@ -1079,7 +1089,6 @@ app.post('/api/stock/transfer', auth, requireRole(['admin', 'importer', 'distrib
             );
         }
 
-        // Phase 6: paired transfer trace events, one per branch.
         const outEvent = await client.query(
             `INSERT INTO trace_events
                 (serial_number, event_type, user_id, organization_id, location_id, batch_number, to_gln, event_data)
@@ -1206,7 +1215,6 @@ app.post('/api/stock/dispense', auth, requireRole(['admin', 'pharmacy']), async 
             [quantity, batch.id]
         );
 
-        // Phase 6: batch-level dispense trace event.
         await client.query(
             `INSERT INTO trace_events
                 (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
@@ -1288,7 +1296,6 @@ app.post('/api/stock/return', auth, requireRole(['admin', 'importer']), async (r
             [quantity, batch.id]
         );
 
-        // Phase 6: batch-level return trace event.
         await client.query(
             `INSERT INTO trace_events
                 (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
@@ -1362,7 +1369,6 @@ app.post('/api/stock/adjust', auth, requireRole(['admin', 'importer']), async (r
             [quantity_delta, batch.id]
         );
 
-               // Phase 6: batch-level adjust trace event.
         await client.query(
             `INSERT INTO trace_events
                 (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
@@ -1471,7 +1477,6 @@ app.get('/api/stock/summary', auth, async (req, res) => {
 
 // ============ BRANCH ROUTES ============
 
-// GET /api/branches — list of OTHER branches (organizations) in the same company.
 app.get('/api/branches', auth, async (req, res) => {
     try {
         const result = await pool.query(
@@ -1489,7 +1494,6 @@ app.get('/api/branches', auth, async (req, res) => {
 
 // ============ TRACE ROUTES ============
 
-// GET /api/trace/serial/:serialNumber — full timeline for one serialized unit
 app.get('/api/trace/serial/:serialNumber', auth, async (req, res) => {
     try {
         const { serialNumber } = req.params;
@@ -1525,7 +1529,6 @@ app.get('/api/trace/serial/:serialNumber', auth, async (req, res) => {
     }
 });
 
-// GET /api/trace/batch/:batchNumber — all trace events for a batch (batch-level + per-unit)
 app.get('/api/trace/batch/:batchNumber', auth, async (req, res) => {
     try {
         const { batchNumber } = req.params;
@@ -1621,6 +1624,17 @@ app.get('/api/reports/efda', auth, requireRole(['admin', 'auditor']), async (req
     }
 });
 
+// ============ ROOT ROUTE (Phase 8) ============
+app.get('/', (req, res) => {
+    res.json({
+        name: 'PharmaTrace Ethiopia API',
+        status: 'OK',
+        version: '1.0.0',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+    });
+});
+
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
     res.json({ 
@@ -1663,5 +1677,6 @@ app.listen(PORT, () => {
     console.log(`   GET  /api/reports/efda`);
     console.log(`   GET  /api/admin/users`);
     console.log(`   GET  /api/admin/audit-logs`);
+    console.log(`   GET  /`);
     console.log(`   GET  /health\n`);
 });
