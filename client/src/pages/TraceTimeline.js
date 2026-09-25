@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Search, RefreshCw, History, Boxes, MapPin,
-    ArrowRight, User as UserIcon, AlertTriangle, CheckCircle, X, X
+    ArrowRight, User as UserIcon, AlertTriangle, CheckCircle, X
 } from 'lucide-react';
 import api from '../services/api';
 import Card, { CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -216,3 +216,4 @@ const TraceTimeline = ({ mode }) => {
 };
 
 export default TraceTimeline;
+
