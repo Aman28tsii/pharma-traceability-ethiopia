@@ -987,15 +987,20 @@ app.post('/api/stock/transfer', auth, requireRole(['admin', 'importer', 'distrib
             [quantity, destBatchId]
         );
 
-        await client.query(
-            `UPDATE serialized_units SET organization_id = $1
-             WHERE id IN (
-                SELECT id FROM serialized_units
-                WHERE batch_number = $2 AND organization_id = $3 AND status <> 'sold'
-                LIMIT $4
-             )`,
-            [to_organization_id, source.batch_number, req.user.organization_id, quantity]
+               // Move up to `quantity` non-sold serialized units of this batch to the destination branch.
+        const unitIdsRes = await client.query(
+            `SELECT id FROM serialized_units
+             WHERE batch_number = $1 AND organization_id = $2 AND status <> 'sold'
+             LIMIT $3`,
+            [source.batch_number, req.user.organization_id, quantity]
         );
+        const unitIds = unitIdsRes.rows.map(r => r.id);
+        if (unitIds.length > 0) {
+            await client.query(
+                `UPDATE serialized_units SET organization_id = $1 WHERE id = ANY($2::int[])`,
+                [to_organization_id, unitIds]
+            );
+        }
 
         await client.query('COMMIT');
 
