@@ -1,4 +1,4 @@
-// server/index.js - Phase 4A audit-logged version
+// server/index.js - Phase 4D stock routes version
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -95,8 +95,6 @@ pool.connect((err, client, release) => {
 });
 
 // ============ AUTH MIDDLEWARE ============
-// Verifies the JWT, then loads organization_id and location_id from the DB.
-// Never trusts organization_id or location_id from the token itself.
 const auth = async (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) {
@@ -567,7 +565,6 @@ app.post('/api/verify', auth, async (req, res) => {
         );
         
         if (result.rows.length === 0) {
-            // Log the failed scan in scan_history regardless of outcome
             await pool.query(
                 `INSERT INTO scan_history (serial_number, gtin, scanned_by_gln, scan_result, ip_address, organization_id) 
                  VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -599,14 +596,12 @@ app.post('/api/verify', auth, async (req, res) => {
             message = `⚠️ Warning: Product expires in ${daysLeft} days`;
         }
         
-        // Record every scan in scan_history (valid, expired, recalled, or warning)
         await pool.query(
             `INSERT INTO scan_history (serial_number, gtin, scanned_by_gln, scan_result, ip_address, organization_id) 
              VALUES ($1, $2, $3, $4, $5, $6)`,
             [serial_number, gtin, req.user.gln, status, req.ip, req.user.organization_id]
         );
         
-        // Record a chain-of-custody trace event only for authentic, non-recalled units
         if (status !== 'invalid') {
             await pool.query(
                 `INSERT INTO trace_events (serial_number, event_type, user_id, organization_id, location_id) 
@@ -633,6 +628,7 @@ app.post('/api/verify', auth, async (req, res) => {
         res.status(500).json({ error: 'Verification failed' });
     }
 });
+
 // ============ DASHBOARD ROUTES ============
 
 app.get('/api/dashboard/stats', auth, async (req, res) => {
@@ -796,7 +792,31 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
              RETURNING *`,
             [batch_number, recall_reason, recall_level, instructions || null, req.user.id, req.user.organization_id]
         );
-        
+
+        // Zero out batch on_hand_quantity and record the recall as a stock movement.
+        const recallBatch = await pool.query(
+            `SELECT b.id, b.batch_number, b.on_hand_quantity, p.gtin
+             FROM batches b JOIN products p ON b.product_id = p.id
+             WHERE b.batch_number = $1 AND b.organization_id = $2`,
+            [batch_number, req.user.organization_id]
+        );
+        if (recallBatch.rows.length > 0 && recallBatch.rows[0].on_hand_quantity !== 0) {
+            const rb = recallBatch.rows[0];
+            await pool.query(
+                `INSERT INTO stock_movements
+                    (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                     reference_type, reference_id, notes, performed_by)
+                 VALUES ($1, $2, $3, $4, 'recall', $5, 'recall', $6, $7, $8)`,
+                [req.user.organization_id, rb.id, rb.batch_number, rb.gtin, -rb.on_hand_quantity,
+                 result.rows[0].id, `Recall: ${recall_reason}`, req.user.id]
+            );
+            await pool.query(
+                `UPDATE batches SET on_hand_quantity = 0, is_recalled = true, status = 'recalled', updated_at = NOW()
+                 WHERE id = $1`,
+                [rb.id]
+            );
+        }
+
         await logAction(pool, {
             userId: req.user.id,
             organizationId: req.user.organization_id,
@@ -810,6 +830,462 @@ app.post('/api/recalls', auth, requireRole(['admin', 'importer']), async (req, r
     } catch (err) {
         console.error('Create recall error:', err);
         res.status(500).json({ error: 'Failed to create recall' });
+    }
+});
+
+// ============ STOCK ROUTES ============
+
+app.post('/api/stock/receive', auth, requireRole(['admin', 'importer']), async (req, res) => {
+    const { batch_id, quantity, counterparty, notes } = req.body;
+    if (!batch_id || !quantity || quantity <= 0) {
+        return res.status(400).json({ error: 'batch_id and positive quantity required' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const batchResult = await client.query(
+            `SELECT b.id, b.batch_number, b.organization_id, p.gtin
+             FROM batches b JOIN products p ON b.product_id = p.id
+             WHERE b.id = $1 AND b.organization_id = $2`,
+            [batch_id, req.user.organization_id]
+        );
+        if (batchResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Batch not found' });
+        }
+        const b = batchResult.rows[0];
+
+        const mv = await client.query(
+            `INSERT INTO stock_movements
+                (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                 reference_type, counterparty, notes, performed_by, ip_address)
+             VALUES ($1, $2, $3, $4, 'receive', $5, 'receive', $6, $7, $8, $9)
+             RETURNING *`,
+            [req.user.organization_id, b.id, b.batch_number, b.gtin, quantity,
+             counterparty || null, notes || null, req.user.id, req.ip]
+        );
+
+        await client.query(
+            'UPDATE batches SET on_hand_quantity = on_hand_quantity + $1, updated_at = NOW() WHERE id = $2',
+            [quantity, b.id]
+        );
+
+        await client.query('COMMIT');
+
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'RECEIVE',
+            entityType: 'stock',
+            entityId: mv.rows[0].id,
+            newData: mv.rows[0],
+            ipAddress: req.ip,
+        });
+
+        res.status(201).json(mv.rows[0]);
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Stock receive error:', err);
+        res.status(500).json({ error: 'Failed to receive stock' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/api/stock/transfer', auth, requireRole(['admin', 'importer', 'distributor']), async (req, res) => {
+    const { batch_id, to_organization_id, quantity, notes } = req.body;
+    if (!batch_id || !to_organization_id || !quantity || quantity <= 0) {
+        return res.status(400).json({ error: 'batch_id, to_organization_id, positive quantity required' });
+    }
+    if (Number(to_organization_id) === Number(req.user.organization_id)) {
+        return res.status(400).json({ error: 'Cannot transfer to the same branch' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const src = await client.query(
+            `SELECT b.id, b.batch_number, b.organization_id, b.on_hand_quantity, p.gtin
+             FROM batches b JOIN products p ON b.product_id = p.id
+             WHERE b.id = $1 AND b.organization_id = $2`,
+            [batch_id, req.user.organization_id]
+        );
+        if (src.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Batch not found' });
+        }
+        const source = src.rows[0];
+        if (source.on_hand_quantity < quantity) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Insufficient stock', available: source.on_hand_quantity });
+        }
+
+        const dest = await client.query(
+            `SELECT id FROM organizations WHERE id = $1`,
+            [to_organization_id]
+        );
+        if (dest.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Destination branch not found' });
+        }
+
+        const srcFull = await client.query(
+            `SELECT product_id, expiry_date, manufacturer_date FROM batches WHERE id = $1`,
+            [batch_id]
+        );
+        const bmeta = srcFull.rows[0];
+
+        const destBatchLookup = await client.query(
+            `SELECT id FROM batches WHERE batch_number = $1 AND organization_id = $2`,
+            [source.batch_number, to_organization_id]
+        );
+        let destBatchId;
+        if (destBatchLookup.rows.length > 0) {
+            destBatchId = destBatchLookup.rows[0].id;
+        } else {
+            const created = await client.query(
+                `INSERT INTO batches
+                    (batch_number, product_id, manufacturer_date, expiry_date, quantity,
+                     total_units, status, created_by, organization_id)
+                 VALUES ($1, $2, $3, $4, 0, 0, 'active', $5, $6)
+                 RETURNING id`,
+                [source.batch_number, bmeta.product_id, bmeta.manufacturer_date, bmeta.expiry_date,
+                 req.user.id, to_organization_id]
+            );
+            destBatchId = created.rows[0].id;
+        }
+
+        const out = await client.query(
+            `INSERT INTO stock_movements
+                (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                 reference_type, counterparty, notes, performed_by, ip_address)
+             VALUES ($1, $2, $3, $4, 'transfer_out', $5, 'transfer', $6, $7, $8, $9)
+             RETURNING *`,
+            [req.user.organization_id, source.id, source.batch_number, source.gtin, -quantity,
+             `branch:${to_organization_id}`, notes || null, req.user.id, req.ip]
+        );
+
+        const inMv = await client.query(
+            `INSERT INTO stock_movements
+                (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                 reference_type, reference_id, counterparty, notes, performed_by, ip_address)
+             VALUES ($1, $2, $3, $4, 'transfer_in', $5, 'transfer', $6, $7, $8, $9, $10)
+             RETURNING *`,
+            [to_organization_id, destBatchId, source.batch_number, source.gtin, quantity,
+             out.rows[0].id, `branch:${req.user.organization_id}`, notes || null, req.user.id, req.ip]
+        );
+
+        await client.query(
+            'UPDATE batches SET on_hand_quantity = on_hand_quantity - $1, updated_at = NOW() WHERE id = $2',
+            [quantity, source.id]
+        );
+        await client.query(
+            'UPDATE batches SET on_hand_quantity = on_hand_quantity + $1, updated_at = NOW() WHERE id = $2',
+            [quantity, destBatchId]
+        );
+
+        await client.query(
+            `UPDATE serialized_units SET organization_id = $1
+             WHERE id IN (
+                SELECT id FROM serialized_units
+                WHERE batch_number = $2 AND organization_id = $3 AND status <> 'sold'
+                LIMIT $4
+             )`,
+            [to_organization_id, source.batch_number, req.user.organization_id, quantity]
+        );
+
+        await client.query('COMMIT');
+
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'TRANSFER_OUT',
+            entityType: 'stock',
+            entityId: out.rows[0].id,
+            newData: { out: out.rows[0], in: inMv.rows[0], to_organization_id },
+            ipAddress: req.ip,
+        });
+
+        res.status(201).json({ transfer_out: out.rows[0], transfer_in: inMv.rows[0] });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Stock transfer error:', err);
+        res.status(500).json({ error: 'Failed to transfer stock' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/api/stock/dispense', auth, requireRole(['admin', 'pharmacy']), async (req, res) => {
+    const { batch_id, quantity, serial_number, counterparty, notes } = req.body;
+    if (!batch_id || !quantity || quantity <= 0) {
+        return res.status(400).json({ error: 'batch_id and positive quantity required' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const src = await client.query(
+            `SELECT b.id, b.batch_number, b.on_hand_quantity, p.gtin
+             FROM batches b JOIN products p ON b.product_id = p.id
+             WHERE b.id = $1 AND b.organization_id = $2`,
+            [batch_id, req.user.organization_id]
+        );
+        if (src.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Batch not found' });
+        }
+        const batch = src.rows[0];
+        if (batch.on_hand_quantity < quantity) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Insufficient stock', available: batch.on_hand_quantity });
+        }
+
+        if (serial_number) {
+            const unitRes = await client.query(
+                `SELECT id, status FROM serialized_units
+                 WHERE serial_number = $1 AND batch_number = $2 AND organization_id = $3`,
+                [serial_number, batch.batch_number, req.user.organization_id]
+            );
+            if (unitRes.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Serialized unit not found' });
+            }
+            if (unitRes.rows[0].status === 'sold') {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'Serialized unit already sold' });
+            }
+            if (unitRes.rows[0].status === 'recalled') {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'Serialized unit is recalled' });
+            }
+            await client.query(
+                `UPDATE serialized_units SET status = 'sold', updated_at = NOW() WHERE id = $1`,
+                [unitRes.rows[0].id]
+            );
+        }
+
+        const mv = await client.query(
+            `INSERT INTO stock_movements
+                (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                 reference_type, counterparty, notes, performed_by, ip_address)
+             VALUES ($1, $2, $3, $4, 'dispense', $5, 'dispense', $6, $7, $8, $9)
+             RETURNING *`,
+            [req.user.organization_id, batch.id, batch.batch_number, batch.gtin, -quantity,
+             counterparty || null, notes || null, req.user.id, req.ip]
+        );
+
+        await client.query(
+            'UPDATE batches SET on_hand_quantity = on_hand_quantity - $1, updated_at = NOW() WHERE id = $2',
+            [quantity, batch.id]
+        );
+
+        await client.query('COMMIT');
+
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'DISPENSE',
+            entityType: 'stock',
+            entityId: mv.rows[0].id,
+            newData: mv.rows[0],
+            ipAddress: req.ip,
+        });
+
+        res.status(201).json(mv.rows[0]);
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Stock dispense error:', err);
+        res.status(500).json({ error: 'Failed to dispense stock' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/api/stock/return', auth, requireRole(['admin', 'importer']), async (req, res) => {
+    const { batch_id, quantity, counterparty, notes } = req.body;
+    if (!batch_id || !quantity || quantity <= 0) {
+        return res.status(400).json({ error: 'batch_id and positive quantity required' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const src = await client.query(
+            `SELECT b.id, b.batch_number, b.on_hand_quantity, p.gtin
+             FROM batches b JOIN products p ON b.product_id = p.id
+             WHERE b.id = $1 AND b.organization_id = $2`,
+            [batch_id, req.user.organization_id]
+        );
+        if (src.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Batch not found' });
+        }
+        const batch = src.rows[0];
+        if (batch.on_hand_quantity < quantity) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Insufficient stock', available: batch.on_hand_quantity });
+        }
+
+        const mv = await client.query(
+            `INSERT INTO stock_movements
+                (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                 reference_type, counterparty, notes, performed_by, ip_address)
+             VALUES ($1, $2, $3, $4, 'return_supplier', $5, 'return', $6, $7, $8, $9)
+             RETURNING *`,
+            [req.user.organization_id, batch.id, batch.batch_number, batch.gtin, -quantity,
+             counterparty || null, notes || null, req.user.id, req.ip]
+        );
+
+        await client.query(
+            'UPDATE batches SET on_hand_quantity = on_hand_quantity - $1, updated_at = NOW() WHERE id = $2',
+            [quantity, batch.id]
+        );
+
+        await client.query('COMMIT');
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'RETURN_SUPPLIER',
+            entityType: 'stock',
+            entityId: mv.rows[0].id,
+            newData: mv.rows[0],
+            ipAddress: req.ip,
+        });
+        res.status(201).json(mv.rows[0]);
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Stock return error:', err);
+        res.status(500).json({ error: 'Failed to return stock' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/api/stock/adjust', auth, requireRole(['admin', 'importer']), async (req, res) => {
+    const { batch_id, quantity_delta, reason, notes } = req.body;
+    if (!batch_id || typeof quantity_delta !== 'number' || quantity_delta === 0) {
+        return res.status(400).json({ error: 'batch_id and non-zero quantity_delta required' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const src = await client.query(
+            `SELECT b.id, b.batch_number, b.on_hand_quantity, p.gtin
+             FROM batches b JOIN products p ON b.product_id = p.id
+             WHERE b.id = $1 AND b.organization_id = $2`,
+            [batch_id, req.user.organization_id]
+        );
+        if (src.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Batch not found' });
+        }
+        const batch = src.rows[0];
+        if (batch.on_hand_quantity + quantity_delta < 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Adjustment would drive on_hand below zero', available: batch.on_hand_quantity });
+        }
+
+        const mv = await client.query(
+            `INSERT INTO stock_movements
+                (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                 reference_type, counterparty, notes, performed_by, ip_address)
+             VALUES ($1, $2, $3, $4, 'adjustment', $5, 'adjustment', $6, $7, $8, $9)
+             RETURNING *`,
+            [req.user.organization_id, batch.id, batch.batch_number, batch.gtin, quantity_delta,
+             reason || null, notes || null, req.user.id, req.ip]
+        );
+
+        await client.query(
+            'UPDATE batches SET on_hand_quantity = on_hand_quantity + $1, updated_at = NOW() WHERE id = $2',
+            [quantity_delta, batch.id]
+        );
+
+        await client.query('COMMIT');
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'ADJUST',
+            entityType: 'stock',
+            entityId: mv.rows[0].id,
+            newData: mv.rows[0],
+            ipAddress: req.ip,
+        });
+        res.status(201).json(mv.rows[0]);
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Stock adjust error:', err);
+        res.status(500).json({ error: 'Failed to adjust stock' });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/stock/movements', auth, async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+        const offset = parseInt(req.query.offset) || 0;
+        const { batch_id, movement_type, from, to } = req.query;
+
+        const params = [req.user.organization_id];
+        let where = 'WHERE sm.organization_id = $1';
+
+        if (batch_id) {
+            params.push(batch_id);
+            where += ` AND sm.batch_id = $${params.length}`;
+        }
+        if (movement_type) {
+            params.push(movement_type);
+            where += ` AND sm.movement_type = $${params.length}`;
+        }
+        if (from) {
+            params.push(from);
+            where += ` AND sm.created_at >= $${params.length}`;
+        }
+        if (to) {
+            params.push(to);
+            where += ` AND sm.created_at <= $${params.length}`;
+        }
+
+        params.push(limit, offset);
+
+        const result = await pool.query(
+            `SELECT sm.*, u.name AS performed_by_name
+             FROM stock_movements sm
+             LEFT JOIN users u ON sm.performed_by = u.id
+             ${where}
+             ORDER BY sm.created_at DESC
+             LIMIT $${params.length - 1} OFFSET $${params.length}`,
+            params
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Fetch stock movements error:', err);
+        res.status(500).json({ error: 'Failed to fetch stock movements' });
+    }
+});
+
+app.get('/api/stock/summary', auth, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT b.id AS batch_id, b.batch_number, b.on_hand_quantity, b.expiry_date,
+                    b.status, b.is_recalled,
+                    p.product_name, p.gtin, p.manufacturer, p.strength
+             FROM batches b
+             JOIN products p ON b.product_id = p.id
+             WHERE b.organization_id = $1
+             ORDER BY p.product_name, b.batch_number`,
+            [req.user.organization_id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Stock summary error:', err);
+        res.status(500).json({ error: 'Failed to fetch stock summary' });
     }
 });
 
@@ -903,6 +1379,13 @@ app.listen(PORT, () => {
     console.log(`   GET  /api/dashboard/expiry-alerts`);
     console.log(`   GET  /api/recalls`);
     console.log(`   POST /api/recalls`);
+    console.log(`   POST /api/stock/receive`);
+    console.log(`   POST /api/stock/transfer`);
+    console.log(`   POST /api/stock/dispense`);
+    console.log(`   POST /api/stock/return`);
+    console.log(`   POST /api/stock/adjust`);
+    console.log(`   GET  /api/stock/movements`);
+    console.log(`   GET  /api/stock/summary`);
     console.log(`   GET  /api/reports/efda`);
     console.log(`   GET  /api/admin/users`);
     console.log(`   GET  /api/admin/audit-logs`);
