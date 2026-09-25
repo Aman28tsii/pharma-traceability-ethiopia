@@ -1,4 +1,4 @@
-// server/index.js - Phase 4D stock routes version
+// server/index.js - Phase 5A branch endpoint + enveloped stock summary
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -1278,7 +1278,13 @@ app.get('/api/stock/movements', auth, async (req, res) => {
 
 app.get('/api/stock/summary', auth, async (req, res) => {
     try {
-        const result = await pool.query(
+        const branchResult = await pool.query(
+            `SELECT id, name FROM organizations WHERE id = $1`,
+            [req.user.organization_id]
+        );
+        const branch = branchResult.rows[0] || { id: req.user.organization_id, name: 'Unknown Branch' };
+
+        const batchesResult = await pool.query(
             `SELECT b.id AS batch_id, b.batch_number, b.on_hand_quantity, b.expiry_date,
                     b.status, b.is_recalled,
                     p.product_name, p.gtin, p.manufacturer, p.strength
@@ -1288,10 +1294,33 @@ app.get('/api/stock/summary', auth, async (req, res) => {
              ORDER BY p.product_name, b.batch_number`,
             [req.user.organization_id]
         );
-        res.json(result.rows);
+
+        res.json({
+            branch,
+            batches: batchesResult.rows,
+        });
     } catch (err) {
         console.error('Stock summary error:', err);
         res.status(500).json({ error: 'Failed to fetch stock summary' });
+    }
+});
+
+// ============ BRANCH ROUTES ============
+
+// GET /api/branches — list of OTHER branches (organizations) in the same company.
+// Used by the transfer form to populate the destination picker.
+app.get('/api/branches', auth, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, name FROM organizations
+             WHERE id <> $1
+             ORDER BY name`,
+            [req.user.organization_id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Fetch branches error:', err);
+        res.status(500).json({ error: 'Failed to fetch branches' });
     }
 });
 
@@ -1392,6 +1421,7 @@ app.listen(PORT, () => {
     console.log(`   POST /api/stock/adjust`);
     console.log(`   GET  /api/stock/movements`);
     console.log(`   GET  /api/stock/summary`);
+    console.log(`   GET  /api/branches`);
     console.log(`   GET  /api/reports/efda`);
     console.log(`   GET  /api/admin/users`);
     console.log(`   GET  /api/admin/audit-logs`);
