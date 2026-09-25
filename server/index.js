@@ -567,6 +567,12 @@ app.post('/api/verify', auth, async (req, res) => {
         );
         
         if (result.rows.length === 0) {
+            // Log the failed scan in scan_history regardless of outcome
+            await pool.query(
+                `INSERT INTO scan_history (serial_number, gtin, scanned_by_gln, scan_result, ip_address, organization_id) 
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [serial_number, gtin, req.user.gln, 'invalid', req.ip, req.user.organization_id]
+            );
             return res.json({ 
                 status: 'invalid', 
                 message: '❌ Product not found - Possible counterfeit',
@@ -593,11 +599,21 @@ app.post('/api/verify', auth, async (req, res) => {
             message = `⚠️ Warning: Product expires in ${daysLeft} days`;
         }
         
+        // Record every scan in scan_history (valid, expired, recalled, or warning)
         await pool.query(
-            `INSERT INTO trace_events (serial_number, event_type, user_id, organization_id, location_id) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [serial_number, 'verify', req.user.id, req.user.organization_id, req.user.location_id]
+            `INSERT INTO scan_history (serial_number, gtin, scanned_by_gln, scan_result, ip_address, organization_id) 
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [serial_number, gtin, req.user.gln, status, req.ip, req.user.organization_id]
         );
+        
+        // Record a chain-of-custody trace event only for authentic, non-recalled units
+        if (status !== 'invalid') {
+            await pool.query(
+                `INSERT INTO trace_events (serial_number, event_type, user_id, organization_id, location_id) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [serial_number, 'verify', req.user.id, req.user.organization_id, req.user.location_id]
+            );
+        }
         
         res.json({
             status,
@@ -617,7 +633,6 @@ app.post('/api/verify', auth, async (req, res) => {
         res.status(500).json({ error: 'Verification failed' });
     }
 });
-
 // ============ DASHBOARD ROUTES ============
 
 app.get('/api/dashboard/stats', auth, async (req, res) => {
