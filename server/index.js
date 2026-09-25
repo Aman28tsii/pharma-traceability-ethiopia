@@ -1362,11 +1362,11 @@ app.post('/api/stock/adjust', auth, requireRole(['admin', 'importer']), async (r
             [quantity_delta, batch.id]
         );
 
-        // Phase 6: batch-level adjust trace event.
+               // Phase 6: batch-level adjust trace event.
         await client.query(
             `INSERT INTO trace_events
                 (serial_number, event_type, user_id, organization_id, location_id, batch_number, event_data)
-             VALUES (NULL, 'adjustment', $1, $2, $3, $4, $5)`,
+             VALUES (NULL, 'adjust', $1, $2, $3, $4, $5)`,
             [
                 req.user.id,
                 req.user.organization_id,
