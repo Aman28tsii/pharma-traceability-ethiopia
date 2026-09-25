@@ -13,6 +13,7 @@ import Recalls from './pages/Recalls';
 import Reports from './pages/Reports';
 import UserManagement from './pages/Admin/Users';
 import AuditLogs from './pages/Admin/AuditLogs';
+import TraceTimeline from './pages/TraceTimeline';
 import Layout from './components/layout';
 
 const PrivateRoute = ({ children }) => {
@@ -57,6 +58,20 @@ function AppContent() {
                 <PrivateRoute>
                     <Layout>
                         <Stock />
+                    </Layout>
+                </PrivateRoute>
+            } />
+            <Route path="/trace/serial/:serialNumber" element={
+                <PrivateRoute>
+                    <Layout>
+                        <TraceTimeline mode="serial" />
+                    </Layout>
+                </PrivateRoute>
+            } />
+            <Route path="/trace/batch/:batchNumber" element={
+                <PrivateRoute>
+                    <Layout>
+                        <TraceTimeline mode="batch" />
                     </Layout>
                 </PrivateRoute>
             } />
