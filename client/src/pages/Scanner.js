@@ -1,54 +1,23 @@
 // client/src/pages/Scanner.js
 // Phase 13A: Manual pharmaceutical verification UI.
-// Uses the existing verifyProduct() service and the existing /api/verify backend.
-// Camera scanning (13B) is not implemented here.
 
 import React, { useState } from 'react';
-import { Scan, Search, X, CheckCircle, AlertTriangle, XCircle, HelpCircle, Package, Boxes } from 'lucide-react';
+import { Scan, Search, X, CheckCircle, AlertTriangle, XCircle, HelpCircle, Boxes } from 'lucide-react';
 import Card, { CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import { verifyProduct } from '../services/api';
 
 const STATUS_META = {
-    valid: {
-        label: 'VALID',
-        variant: 'success',
-        Icon: CheckCircle,
-        tone: 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-800 dark:text-green-200',
-    },
-    warning: {
-        label: 'EXPIRING SOON',
-        variant: 'warning',
-        Icon: AlertTriangle,
-        tone: 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200',
-    },
-    expired: {
-        label: 'EXPIRED',
-        variant: 'danger',
-        Icon: XCircle,
-        tone: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200',
-    },
-    recalled: {
-        label: 'RECALLED',
-        variant: 'danger',
-        Icon: XCircle,
-        tone: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200',
-    },
-    invalid: {
-        label: 'INVALID / NOT FOUND',
-        variant: 'default',
-        Icon: HelpCircle,
-        tone: 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200',
-    },
+    valid: { label: 'VALID', Icon: CheckCircle, tone: 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-800 dark:text-green-200' },
+    warning: { label: 'EXPIRING SOON', Icon: AlertTriangle, tone: 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200' },
+    expired: { label: 'EXPIRED', Icon: XCircle, tone: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200' },
+    recalled: { label: 'RECALLED', Icon: XCircle, tone: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-800 dark:text-red-200' },
+    invalid: { label: 'INVALID / NOT FOUND', Icon: HelpCircle, tone: 'bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200' },
 };
 
 const fmtDate = (d) => {
     if (!d) return '—';
-    try {
-        return new Date(d).toLocaleDateString();
-    } catch {
-        return String(d);
-    }
+    try { return new Date(d).toLocaleDateString(); } catch { return String(d); }
 };
 
 const ResultField = ({ label, value }) => (
@@ -73,26 +42,16 @@ const Scanner = () => {
         setLoading(false);
     };
 
-    const handleVerify = async (e) => {
-        if (e) e.preventDefault();
+    const handleVerify = async () => {
         setError('');
         setResult(null);
 
         const trimmedGtin = gtin.trim();
         const trimmedSerial = serialNumber.trim();
 
-        if (!trimmedGtin) {
-            setError('GTIN is required.');
-            return;
-        }
-        if (!/^\d{14}$/.test(trimmedGtin)) {
-            setError('GTIN must be exactly 14 digits.');
-            return;
-        }
-        if (!trimmedSerial) {
-            setError('Serial number is required.');
-            return;
-        }
+        if (!trimmedGtin) { setError('GTIN is required.'); return; }
+        if (!/^\d{14}$/.test(trimmedGtin)) { setError('GTIN must be exactly 14 digits.'); return; }
+        if (!trimmedSerial) { setError('Serial number is required.'); return; }
 
         setLoading(true);
         try {
@@ -101,17 +60,10 @@ const Scanner = () => {
         } catch (err) {
             const status = err?.response?.status;
             const bodyError = err?.response?.data?.error;
-            if (status === 401 || status === 403) {
-                setError('Your session has expired or you are not authorized. Please log in again.');
-            } else if (status === 400) {
-                setError(bodyError || 'The server rejected the request. Check the GTIN and serial number.');
-            } else if (status >= 500) {
-                setError('The server encountered an error. Please try again in a moment.');
-            } else if (err?.message) {
-                setError('Network error. Please check your connection and try again.');
-            } else {
-                setError('Verification failed. Please try again.');
-            }
+            if (status === 401 || status === 403) setError('Session expired or not authorized. Please log in again.');
+            else if (status === 400) setError(bodyError || 'The server rejected the request.');
+            else if (status >= 500) setError('Server error. Please try again in a moment.');
+            else setError('Network error. Please try again.');
         } finally {
             setLoading(false);
         }
@@ -123,7 +75,6 @@ const Scanner = () => {
 
     return (
         <div className="space-y-4">
-            {/* Header */}
             <div>
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
                     <Scan className="w-6 h-6 text-blue-600 dark:text-blue-400" />
@@ -134,7 +85,6 @@ const Scanner = () => {
                 </p>
             </div>
 
-            {/* Form */}
             <Card>
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -143,7 +93,7 @@ const Scanner = () => {
                     </CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <form onSubmit={handleVerify} className="space-y-4">
+                    <div className="space-y-4">
                         <div>
                             <label className="label" htmlFor="gtin">GTIN (14 digits)</label>
                             <input
@@ -183,11 +133,12 @@ const Scanner = () => {
 
                         <div className="flex gap-3 pt-1">
                             <Button
-                                type="submit"
+                                type="button"
                                 variant="primary"
                                 fullWidth
                                 loading={loading}
                                 icon={Search}
+                                onClick={handleVerify}
                             >
                                 {loading ? 'Verifying...' : 'Verify'}
                             </Button>
@@ -201,11 +152,10 @@ const Scanner = () => {
                                 Clear
                             </Button>
                         </div>
-                    </form>
+                    </div>
                 </CardContent>
             </Card>
 
-            {/* Result */}
             {result && meta && (
                 <Card>
                     <div className={`rounded-xl border p-4 ${meta.tone}`}>
@@ -213,9 +163,7 @@ const Scanner = () => {
                             <StatusIcon className="w-7 h-7 shrink-0" />
                             <div className="flex-1">
                                 <div className="text-lg font-bold">{meta.label}</div>
-                                {result.message && (
-                                    <div className="text-sm mt-0.5">{result.message}</div>
-                                )}
+                                {result.message && <div className="text-sm mt-0.5">{result.message}</div>}
                             </div>
                         </div>
                     </div>
@@ -229,33 +177,23 @@ const Scanner = () => {
                             <ResultField label="Manufacturer" value={product.manufacturer} />
                             <ResultField label="Strength" value={product.strength} />
                             <ResultField label="Expiry Date" value={fmtDate(product.expiry_date)} />
-                            <ResultField
-                                label="Days to Expiry"
-                                value={
-                                    typeof product.days_left === 'number'
-                                        ? `${product.days_left} day${product.days_left === 1 ? '' : 's'}`
-                                        : '—'
-                                }
-                            />
+                            <ResultField label="Days to Expiry" value={typeof product.days_left === 'number' ? `${product.days_left} day${product.days_left === 1 ? '' : 's'}` : '—'} />
                             <ResultField label="Unit Status" value={product.current_status} />
                         </div>
                     ) : (
                         <div className="mt-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-300">
-                            No product record was returned. This serial and GTIN pair is not registered in
-                            your branch. If you believe this is an error, check the numbers and try again.
+                            No product record was returned. This serial and GTIN pair is not registered in your branch.
                         </div>
                     )}
                 </Card>
             )}
 
-            {/* Informational card */}
             {!result && !error && (
                 <Card>
                     <CardContent>
                         <p className="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
                             <Boxes className="w-4 h-4 mt-0.5 shrink-0" />
-                            Camera scanning is not yet available. For now, verification is performed by
-                            typing the GTIN and serial number exactly as printed on the packaging.
+                            Camera scanning is not yet available. Enter the GTIN and serial number exactly as printed on the packaging.
                         </p>
                     </CardContent>
                 </Card>
