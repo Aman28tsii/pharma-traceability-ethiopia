@@ -52,45 +52,191 @@ const isPositiveInt = (v) => {
     return Number.isInteger(n) && n >= 1;
 };
 
-// ---------- existing: PRODUCT IMPORT ----------
+// ---- Phase 14B M1: boolean parser for CSV values ----
+const parseBoolean = (v) => {
+    if (v === undefined || v === null) return { ok: true, value: null };
+    const s = String(v).trim().toLowerCase();
+    if (s === '') return { ok: true, value: null };
+    if (['true', '1', 'yes', 'y', 't'].includes(s)) return { ok: true, value: true };
+    if (['false', '0', 'no', 'n', 'f'].includes(s)) return { ok: true, value: false };
+    return { ok: false, value: null };
+};
+
+const trimOrNull = (v) => {
+    if (v === undefined || v === null) return null;
+    const s = String(v).trim();
+    return s === '' ? null : s;
+};
+
+// ---------- Phase 14B M1: PRODUCT IMPORT (dry-run, BOM, extended fields, transactional) ----------
+// CSV columns: gtin, product_name, manufacturer, strength, dosage_form, pack_size, prescription_required
+// Query: ?dry_run=true|false (default false)
+// Insert-only. No update-on-conflict. organization_id always from req.user.
 router.post('/products', authenticateToken, requireRole(['admin', 'importer']), upload.single('file'), async (req, res) => {
-    const results = [];
-    const errors = [];
-    let successCount = 0;
+    const orgId = req.user.organization_id;
+    const dryRun = String(req.query.dry_run || 'false').toLowerCase() === 'true';
+    const files = [];
 
-    fs.createReadStream(req.file.path)
-        .pipe(csv())
-        .on('data', (data) => results.push(data))
-        .on('end', async () => {
-            for (const row of results) {
-                try {
-                    const { gtin, product_name, manufacturer, strength } = row;
-                    if (!gtin || !product_name) {
-                        errors.push({ row, error: 'GTIN and Product Name required' });
-                        continue;
-                    }
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'CSV file is required' });
+        }
+        files.push(req.file);
 
-                    await pool.query(
-                        `INSERT INTO products (gtin, product_name, manufacturer, strength, created_by, organization_id)
-                         VALUES ($1, $2, $3, $4, $5, $6)`,
-                        [gtin, product_name, manufacturer, strength, req.user.id, req.user.organization_id]
-                    );
-                    successCount++;
-                } catch (err) {
-                    errors.push({ row, error: err.message });
-                }
+        const rows = await readCsv(req.file.path);
+
+        const errors = [];
+        const validRows = [];
+        const seenGtins = new Set();
+        const duplicatesInFile = [];
+
+        rows.forEach((row, idx) => {
+            const line = idx + 1;
+            const gtinRaw = trimOrNull(row.gtin);
+            const nameRaw = trimOrNull(row.product_name);
+
+            if (!gtinRaw) {
+                errors.push({ row: line, gtin: null, error: 'gtin required' });
+                return;
+            }
+            if (!isFourteenDigits(gtinRaw)) {
+                errors.push({ row: line, gtin: gtinRaw, error: 'gtin must be 14 digits' });
+                return;
+            }
+            if (!nameRaw) {
+                errors.push({ row: line, gtin: gtinRaw, error: 'product_name required' });
+                return;
             }
 
-            fs.unlinkSync(req.file.path);
+            const gtin = gtinRaw.trim();
 
-            res.json({
-                success: true,
-                total: results.length,
-                imported: successCount,
-                failed: errors.length,
-                errors
+            if (seenGtins.has(gtin)) {
+                duplicatesInFile.push(gtin);
+                return;
+            }
+            seenGtins.add(gtin);
+
+            const rx = parseBoolean(row.prescription_required);
+            if (!rx.ok) {
+                errors.push({ row: line, gtin, error: 'prescription_required must be a boolean (true/false)' });
+                return;
+            }
+
+            validRows.push({
+                gtin,
+                product_name: nameRaw,
+                manufacturer: trimOrNull(row.manufacturer),
+                strength: trimOrNull(row.strength),
+                dosage_form: trimOrNull(row.dosage_form),
+                pack_size: trimOrNull(row.pack_size),
+                prescription_required: rx.value,
             });
         });
+
+        // DB duplicate check (org-scoped, insert-only)
+        let duplicatesInDb = [];
+        if (validRows.length > 0) {
+            const gtins = validRows.map(r => r.gtin);
+            const existing = await pool.query(
+                `SELECT gtin FROM products WHERE organization_id = $1 AND gtin = ANY($2::text[])`,
+                [orgId, gtins]
+            );
+            const existingSet = new Set(existing.rows.map(r => r.gtin));
+            duplicatesInDb = [...existingSet];
+        }
+
+        const duplicatesInDbSet = new Set(duplicatesInDb);
+        const toInsert = validRows.filter(r => !duplicatesInDbSet.has(r.gtin));
+
+        if (dryRun) {
+            cleanup(files);
+            return res.json({
+                success: true,
+                dry_run: true,
+                wrote: false,
+                total: rows.length,
+                valid: toInsert.length,
+                failed: errors.length,
+                duplicates_in_file: duplicatesInFile,
+                duplicates_in_db: duplicatesInDb,
+                errors,
+            });
+        }
+
+        // Transactional insert of everything that passed validation and dedup.
+        let imported = 0;
+        if (toInsert.length > 0) {
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
+
+                // Batched insert using unnest for efficiency at 50-500 row scale.
+                const gtins = toInsert.map(r => r.gtin);
+                const names = toInsert.map(r => r.product_name);
+                const mfrs = toInsert.map(r => r.manufacturer);
+                const strengths = toInsert.map(r => r.strength);
+                const dosages = toInsert.map(r => r.dosage_form);
+                const packs = toInsert.map(r => r.pack_size);
+                const rx = toInsert.map(r => r.prescription_required);
+
+                await client.query(
+                    `INSERT INTO products
+                        (gtin, product_name, manufacturer, strength, dosage_form, pack_size, prescription_required, created_by, organization_id)
+                     SELECT g, n, m, s, d, p, r, $8, $9
+                     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::boolean[])
+                          AS t(g, n, m, s, d, p, r)`,
+                    [gtins, names, mfrs, strengths, dosages, packs, rx, req.user.id, orgId]
+                );
+
+                await client.query('COMMIT');
+                imported = toInsert.length;
+            } catch (innerErr) {
+                try { await client.query('ROLLBACK'); } catch (e) {}
+                console.error('Product import transaction failed:', innerErr);
+                cleanup(files);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Import failed; no products were written.',
+                    detail: innerErr.message,
+                });
+            } finally {
+                client.release();
+            }
+        }
+
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: orgId,
+            action: 'IMPORT',
+            entityType: 'product',
+            entityId: null,
+            newData: {
+                total: rows.length,
+                imported,
+                failed: errors.length,
+                duplicates_in_file: duplicatesInFile.length,
+                duplicates_in_db: duplicatesInDb.length,
+            },
+            ipAddress: req.ip,
+        });
+
+        cleanup(files);
+        return res.json({
+            success: true,
+            dry_run: false,
+            wrote: imported > 0,
+            total: rows.length,
+            imported,
+            failed: errors.length,
+            duplicates_in_file: duplicatesInFile,
+            duplicates_in_db: duplicatesInDb,
+            errors,
+        });
+    } catch (err) {
+        cleanup(files);
+        console.error('Product import outer error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // ---------- Phase 11: BULK BATCH + SERIAL IMPORT ----------
