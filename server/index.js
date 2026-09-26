@@ -401,7 +401,7 @@ app.get('/api/admin/audit-logs', auth, requireRole(['admin']), async (req, res) 
 
 // ============ PRODUCT ROUTES ============
 
-app.get('/api/products', auth, async (req, res) => {
+app.get('/api/products', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const result = await pool.query(
             'SELECT * FROM products WHERE organization_id = $1 ORDER BY created_at DESC',
@@ -414,7 +414,7 @@ app.get('/api/products', auth, async (req, res) => {
     }
 });
 
-app.get('/api/products/:id', auth, async (req, res) => {
+app.get('/api/products/:id', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const result = await pool.query(
             'SELECT * FROM products WHERE id = $1 AND organization_id = $2',
@@ -565,7 +565,7 @@ app.delete('/api/products/:id', auth, requireRole(['admin', 'importer']), async 
 
 // ============ BATCH ROUTES ============
 
-app.get('/api/batches', auth, async (req, res) => {
+app.get('/api/batches', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT b.*, p.product_name, p.gtin,
@@ -738,7 +738,7 @@ app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, r
 
 // ============ VERIFICATION (SCANNER) ============
 
-app.post('/api/verify', auth, async (req, res) => {
+app.post('/api/verify', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     const { gtin, serial_number } = req.body;
     
     if (!gtin || !serial_number) {
@@ -831,7 +831,7 @@ app.post('/api/verify', auth, async (req, res) => {
 
 // ============ DASHBOARD ROUTES ============
 
-app.get('/api/dashboard/stats', auth, async (req, res) => {
+app.get('/api/dashboard/stats', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     const orgId = req.user.organization_id;
     try {
         let totalProducts = 0;
@@ -902,7 +902,7 @@ app.get('/api/dashboard/stats', auth, async (req, res) => {
     }
 });
 
-app.get('/api/dashboard/recent-activity', auth, async (req, res) => {
+app.get('/api/dashboard/recent-activity', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT 
@@ -927,7 +927,7 @@ app.get('/api/dashboard/recent-activity', auth, async (req, res) => {
     }
 });
 
-app.get('/api/dashboard/expiry-alerts', auth, async (req, res) => {
+app.get('/api/dashboard/expiry-alerts', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT 
@@ -954,7 +954,7 @@ app.get('/api/dashboard/expiry-alerts', auth, async (req, res) => {
 
 // ============ RECALL ROUTES ============
 
-app.get('/api/recalls', auth, async (req, res) => {
+app.get('/api/recalls', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT r.*, u.name as initiated_by_name
@@ -1556,7 +1556,7 @@ app.post('/api/stock/adjust', auth, requireRole(['admin', 'importer']), async (r
     }
 });
 
-app.get('/api/stock/movements', auth, async (req, res) => {
+app.get('/api/stock/movements', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const limit = Math.min(parseInt(req.query.limit) || 100, 500);
         const offset = parseInt(req.query.offset) || 0;
@@ -1600,7 +1600,7 @@ app.get('/api/stock/movements', auth, async (req, res) => {
     }
 });
 
-app.get('/api/stock/summary', auth, async (req, res) => {
+app.get('/api/stock/summary', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const branchResult = await pool.query(
             `SELECT id, name FROM organizations WHERE id = $1`,
@@ -1631,7 +1631,7 @@ app.get('/api/stock/summary', auth, async (req, res) => {
 
 // ============ BRANCH ROUTES ============
 
-app.get('/api/branches', auth, async (req, res) => {
+app.get('/api/branches', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT id, name FROM organizations
@@ -1648,7 +1648,7 @@ app.get('/api/branches', auth, async (req, res) => {
 
 // ============ TRACE ROUTES ============
 
-app.get('/api/trace/serial/:serialNumber', auth, async (req, res) => {
+app.get('/api/trace/serial/:serialNumber', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const { serialNumber } = req.params;
 
@@ -1683,7 +1683,7 @@ app.get('/api/trace/serial/:serialNumber', auth, async (req, res) => {
     }
 });
 
-app.get('/api/trace/batch/:batchNumber', auth, async (req, res) => {
+app.get('/api/trace/batch/:batchNumber', auth, requireRole(['admin','importer','distributor','pharmacy','auditor']), async (req, res) => {
     try {
         const { batchNumber } = req.params;
 
