@@ -708,6 +708,8 @@ app.post('/api/verify', auth, async (req, res) => {
                 gtin: unit.gtin,
                 serial_number: unit.serial_number,
                 batch: unit.batch_number,
+                manufacturer: unit.manufacturer,
+                strength: unit.strength,
                 expiry_date: unit.expiry_date,
                 days_left: daysLeft,
                 current_status: unit.status
