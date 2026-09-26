@@ -91,6 +91,11 @@ export const deleteUser = (id) => {
     return api.delete(`/admin/users/${id}`);
 };
 
+export const resetUserPassword = (id, new_password) => {
+    return api.post(/admin/users/${id}/reset-password, { new_password });
+};
+
+
 // ============ PRODUCT APIS ============
 export const getProducts = () => {
     return api.get('/products');

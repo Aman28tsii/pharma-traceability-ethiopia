@@ -286,6 +286,48 @@ app.put('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res) =
     }
 });
 
+// Reset a user's password (admin-triggered, branch-scoped)
+app.post('/api/admin/users/:id/reset-password', auth, requireRole(['admin']), async (req, res) => {
+    const { new_password } = req.body;
+
+    if (!new_password || typeof new_password !== 'string') {
+        return res.status(400).json({ error: 'New password required' });
+    }
+    if (new_password.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    try {
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+
+        const result = await pool.query(
+            UPDATE users
+             SET password = $1, updated_at = NOW()
+             WHERE id = $2 AND organization_id = $3
+             RETURNING id, name, email, role, is_active,
+            [hashedPassword, req.params.id, req.user.organization_id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        await logAction(pool, {
+            userId: req.user.id,
+            organizationId: req.user.organization_id,
+            action: 'RESET_PASSWORD',
+            entityType: 'user',
+            entityId: result.rows[0].id,
+            newData: { id: result.rows[0].id, email: result.rows[0].email },
+            ipAddress: req.ip,
+        });
+
+        res.json({ success: true, user: result.rows[0] });
+    } catch (err) {
+        console.error('Reset password error:', err);
+        res.status(500).json({ error: 'Failed to reset password' });
+    }
+});
 app.delete('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res) => {
     try {
         const result = await pool.query(
@@ -1723,6 +1765,22 @@ app.get('/', (req, res) => {
     });
 });
 
+// Database readiness probe. Unlike /health, this checks the DB.
+app.get('/readyz', async (req, res) => {
+    try {
+        await pool.query('SELECT 1');
+        res.status(200).json({
+            status: 'ready',
+            timestamp: new Date().toISOString(),
+        });
+    } catch (err) {
+        console.error('Readiness check failed:', err.message);
+        res.status(503).json({
+            status: 'not_ready',
+            timestamp: new Date().toISOString(),
+        });
+    }
+});
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
     res.json({ 

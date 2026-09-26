@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
-import { ArrowLeft, Users, Plus, Edit2, Trash2, Shield, CheckCircle, XCircle, X } from 'lucide-react';
+import { resetUserPassword } from '../../services/api';
+import { ArrowLeft, Users, Plus, Edit2, Trash2, Shield, CheckCircle, XCircle, X, KeyRound } from 'lucide-react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import { PageLoader } from '../../components/ui/LoadingSpinner';
@@ -20,6 +21,14 @@ const UserManagement = () => {
         role: 'pharmacy',
         gln: ''
     });
+
+    // password reset state
+    const [resetTarget, setResetTarget] = useState(null);
+    const [resetForm, setResetForm] = useState({ new_password: '', confirm_password: '' });
+    const [resetSubmitting, setResetSubmitting] = useState(false);
+    const [resetError, setResetError] = useState('');
+    const [resetSuccess, setResetSuccess] = useState('');
+
     const { user } = useAuth();
     const navigate = useNavigate();
 
@@ -84,6 +93,56 @@ const UserManagement = () => {
             fetchUsers();
         } catch (error) {
             alert('Failed to update user status');
+        }
+    };
+
+    const openResetModal = (u) => {
+        setResetTarget(u);
+        setResetForm({ new_password: '', confirm_password: '' });
+        setResetError('');
+        setResetSuccess('');
+    };
+
+    const closeResetModal = () => {
+        if (resetSubmitting) return;
+        setResetTarget(null);
+        setResetForm({ new_password: '', confirm_password: '' });
+        setResetError('');
+        setResetSuccess('');
+    };
+
+    const handleResetSubmit = async (e) => {
+        e.preventDefault();
+        setResetError('');
+        setResetSuccess('');
+
+        const { new_password, confirm_password } = resetForm;
+
+        if (!new_password) {
+            setResetError('New password is required.');
+            return;
+        }
+        if (new_password.length < 6) {
+            setResetError('Password must be at least 6 characters.');
+            return;
+        }
+        if (new_password !== confirm_password) {
+            setResetError('Passwords do not match.');
+            return;
+        }
+
+        setResetSubmitting(true);
+        try {
+            await resetUserPassword(resetTarget.id, new_password);
+            setResetSuccess(`Password reset for ${resetTarget.name}.`);
+            setTimeout(() => {
+                closeResetModal();
+            }, 1500);
+        } catch (err) {
+            const msg = err.response?.data?.error || 'Failed to reset password';
+            setResetError(msg);
+        } finally {
+            setResetSubmitting(false);
         }
     };
 
@@ -182,6 +241,13 @@ const UserManagement = () => {
                                         {u.is_active ? <XCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
                                     </button>
                                     <button 
+                                        onClick={() => openResetModal(u)}
+                                        className="p-2 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-lg transition"
+                                        title="Reset Password"
+                                    >
+                                        <KeyRound className="w-4 h-4" />
+                                    </button>
+                                    <button 
                                         onClick={() => {
                                             setEditingUser(u);
                                             setFormData({
@@ -274,7 +340,7 @@ const UserManagement = () => {
                                         <input
                                             type="password"
                                             className="input"
-                                            placeholder="••••••••"
+                                            placeholder="********"
                                             value={formData.password}
                                             onChange={(e) => setFormData({...formData, password: e.target.value})}
                                             required
@@ -336,6 +402,76 @@ const UserManagement = () => {
                                 </Button>
                                 <Button type="submit" variant="primary" loading={submitting} fullWidth>
                                     {editingUser ? 'Update User' : 'Create User'}
+                                </Button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Reset Password Modal */}
+            {resetTarget && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-70 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white dark:bg-gray-800 rounded-xl max-w-md w-full p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-xl font-bold text-gray-900 dark:text-white">Reset Password</h2>
+                            <button onClick={closeResetModal} className="text-gray-500 dark:text-gray-400" disabled={resetSubmitting}>
+                                <X className="w-6 h-6" />
+                            </button>
+                        </div>
+
+                        <div className="mb-4 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
+                            <p className="text-sm text-gray-600 dark:text-gray-400">Resetting password for:</p>
+                            <p className="font-semibold text-gray-900 dark:text-white">{resetTarget.name}</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">{resetTarget.email}</p>
+                        </div>
+
+                        <form onSubmit={handleResetSubmit} className="space-y-4">
+                            <div>
+                                <label className="label">New Password *</label>
+                                <input
+                                    type="password"
+                                    className="input"
+                                    placeholder="********"
+                                    value={resetForm.new_password}
+                                    onChange={(e) => setResetForm({...resetForm, new_password: e.target.value})}
+                                    disabled={resetSubmitting}
+                                    required
+                                />
+                                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Minimum 6 characters</p>
+                            </div>
+
+                            <div>
+                                <label className="label">Confirm Password *</label>
+                                <input
+                                    type="password"
+                                    className="input"
+                                    placeholder="********"
+                                    value={resetForm.confirm_password}
+                                    onChange={(e) => setResetForm({...resetForm, confirm_password: e.target.value})}
+                                    disabled={resetSubmitting}
+                                    required
+                                />
+                            </div>
+
+                            {resetError && (
+                                <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-sm">
+                                    {resetError}
+                                </div>
+                            )}
+
+                            {resetSuccess && (
+                                <div className="p-3 rounded-lg bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 text-sm">
+                                    {resetSuccess}
+                                </div>
+                            )}
+
+                            <div className="flex gap-3 pt-2">
+                                <Button type="button" variant="outline" onClick={closeResetModal} fullWidth disabled={resetSubmitting}>
+                                    Cancel
+                                </Button>
+                                <Button type="submit" variant="primary" loading={resetSubmitting} fullWidth>
+                                    Reset Password
                                 </Button>
                             </div>
                         </form>
