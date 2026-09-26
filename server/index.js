@@ -28,7 +28,7 @@ const PORT = process.env.PORT || 5000;
 let pool;
 
 if (process.env.NODE_ENV === 'production') {
-    console.log('🔵 Running in PRODUCTION mode - using Neon database');
+    console.log('ðŸ”µ Running in PRODUCTION mode - using Neon database');
     pool = new Pool({
         connectionString: process.env.DATABASE_URL,
         ssl: {
@@ -40,7 +40,7 @@ if (process.env.NODE_ENV === 'production') {
         connectionTimeoutMillis: 10000,
     });
 } else {
-    console.log('🟢 Running in DEVELOPMENT mode - using local database');
+    console.log('ðŸŸ¢ Running in DEVELOPMENT mode - using local database');
     pool = new Pool({
         host: process.env.DB_HOST || 'localhost',
         port: parseInt(process.env.DB_PORT) || 5432,
@@ -55,7 +55,7 @@ if (process.env.NODE_ENV === 'production') {
 
 // Phase 8: prevent unhandled pool errors from crashing the process on Neon cold-start
 pool.on('error', (err) => {
-    console.error('⚠️ Idle pool error (handled):', err.message);
+    console.error('âš ï¸ Idle pool error (handled):', err.message);
 });
 
 // Middleware
@@ -99,15 +99,15 @@ const connectWithRetry = async (attempt = 1, maxAttempts = 5) => {
         const client = await pool.connect();
         await client.query('SELECT 1 AS ok');
         client.release();
-        console.log(`✅ Database connected (attempt ${attempt})`);
+        console.log(`âœ… Database connected (attempt ${attempt})`);
     } catch (err) {
-        console.error(`❌ Database connection attempt ${attempt}/${maxAttempts} failed:`, err.message);
+        console.error(`âŒ Database connection attempt ${attempt}/${maxAttempts} failed:`, err.message);
         if (attempt < maxAttempts) {
             const delay = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
             console.log(`   Retrying in ${delay}ms...`);
             setTimeout(() => connectWithRetry(attempt + 1, maxAttempts), delay);
         } else {
-            console.error('❌ All database connection attempts failed. Server continues running; queries will retry on demand.');
+            console.error('âŒ All database connection attempts failed. Server continues running; queries will retry on demand.');
         }
     }
 };
@@ -310,7 +310,7 @@ app.delete('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res
     }
 });
 
-// GET /api/admin/audit-logs — admin-only, branch-scoped
+// GET /api/admin/audit-logs â€” admin-only, branch-scoped
 app.get('/api/admin/audit-logs', auth, requireRole(['admin']), async (req, res) => {
     try {
         const limit = Math.min(parseInt(req.query.limit) || 50, 200);
@@ -387,19 +387,41 @@ app.get('/api/products/:id', auth, async (req, res) => {
     }
 });
 
+// ---- Phase 12 P0-2: persist dosage_form, pack_size, prescription_required on create ----
 app.post('/api/products', auth, requireRole(['admin', 'importer']), async (req, res) => {
-    const { gtin, product_name, manufacturer, strength } = req.body;
-    
+    const {
+        gtin,
+        product_name,
+        manufacturer,
+        strength,
+        dosage_form,
+        pack_size,
+        prescription_required,
+    } = req.body;
+
     if (!gtin || !product_name) {
         return res.status(400).json({ error: 'GTIN and product name required' });
     }
-    
+
     try {
         const result = await pool.query(
-            `INSERT INTO products (gtin, product_name, manufacturer, strength, created_by, organization_id) 
-             VALUES ($1, $2, $3, $4, $5, $6) 
+            `INSERT INTO products
+                (gtin, product_name, manufacturer, strength,
+                 dosage_form, pack_size, prescription_required,
+                 created_by, organization_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              RETURNING *`,
-            [gtin, product_name, manufacturer || null, strength || null, req.user.id, req.user.organization_id]
+            [
+                gtin,
+                product_name,
+                manufacturer || null,
+                strength || null,
+                dosage_form || null,
+                pack_size || null,
+                typeof prescription_required === 'boolean' ? prescription_required : false,
+                req.user.id,
+                req.user.organization_id,
+            ]
         );
         await logAction(pool, {
             userId: req.user.id,
@@ -421,20 +443,40 @@ app.post('/api/products', auth, requireRole(['admin', 'importer']), async (req, 
     }
 });
 
+// ---- Phase 12 P0-2: persist dosage_form, pack_size, prescription_required on update ----
 app.put('/api/products/:id', auth, requireRole(['admin', 'importer']), async (req, res) => {
-    const { product_name, manufacturer, strength } = req.body;
-    
+    const {
+        product_name,
+        manufacturer,
+        strength,
+        dosage_form,
+        pack_size,
+        prescription_required,
+    } = req.body;
+
     try {
         const result = await pool.query(
-            `UPDATE products 
+            `UPDATE products
              SET product_name = COALESCE($1, product_name),
                  manufacturer = COALESCE($2, manufacturer),
-                 strength = COALESCE($3, strength)
-             WHERE id = $4 AND organization_id = $5
+                 strength = COALESCE($3, strength),
+                 dosage_form = COALESCE($4, dosage_form),
+                 pack_size = COALESCE($5, pack_size),
+                 prescription_required = COALESCE($6, prescription_required)
+             WHERE id = $7 AND organization_id = $8
              RETURNING *`,
-            [product_name, manufacturer, strength, req.params.id, req.user.organization_id]
+            [
+                product_name,
+                manufacturer,
+                strength,
+                dosage_form,
+                pack_size,
+                typeof prescription_required === 'boolean' ? prescription_required : null,
+                req.params.id,
+                req.user.organization_id,
+            ]
         );
-        
+
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Product not found' });
         }
@@ -612,7 +654,7 @@ app.post('/api/verify', auth, async (req, res) => {
             );
             return res.json({ 
                 status: 'invalid', 
-                message: '❌ Product not found - Possible counterfeit',
+                message: 'âŒ Product not found - Possible counterfeit',
                 product: null 
             });
         }
@@ -623,17 +665,17 @@ app.post('/api/verify', auth, async (req, res) => {
         const daysLeft = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
         
         let status = 'valid';
-        let message = '✅ Product is AUTHENTIC and VALID';
+        let message = 'âœ… Product is AUTHENTIC and VALID';
         
         if (unit.status === 'recalled') {
             status = 'recalled';
-            message = '⚠️ CRITICAL: Product has been RECALLED! Do not use.';
+            message = 'âš ï¸ CRITICAL: Product has been RECALLED! Do not use.';
         } else if (expiry < now) {
             status = 'expired';
-            message = '❌ Product has EXPIRED - Do not use';
+            message = 'âŒ Product has EXPIRED - Do not use';
         } else if (daysLeft <= 30) {
             status = 'warning';
-            message = `⚠️ Warning: Product expires in ${daysLeft} days`;
+            message = `âš ï¸ Warning: Product expires in ${daysLeft} days`;
         }
         
         await pool.query(
@@ -1690,10 +1732,10 @@ app.get('/health', (req, res) => {
 
 // ============ START SERVER ============
 app.listen(PORT, () => {
-    console.log(`\n🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔗 API URL: http://localhost:${PORT}`);
-    console.log(`\n📋 Available Endpoints:`);
+    console.log(`\nðŸš€ Server running on http://localhost:${PORT}`);
+    console.log(`ðŸ“¡ Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`ðŸ”— API URL: http://localhost:${PORT}`);
+    console.log(`\nðŸ“‹ Available Endpoints:`);
     console.log(`   POST /api/auth/login`);
     console.log(`   POST /api/auth/register`);
     console.log(`   GET  /api/products`);
@@ -1702,7 +1744,7 @@ app.listen(PORT, () => {
     console.log(`   DELETE /api/products/:id`);
     console.log(`   GET  /api/batches`);
     console.log(`   POST /api/batches`);
-    console.log(`   POST /api/verify     ← Scanner endpoint`);
+    console.log(`   POST /api/verify     â† Scanner endpoint`);
     console.log(`   GET  /api/dashboard/stats`);
     console.log(`   GET  /api/dashboard/recent-activity`);
     console.log(`   GET  /api/dashboard/expiry-alerts`);

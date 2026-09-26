@@ -10,12 +10,24 @@ import { logAction } from '../middleware/audit.js';
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
 
+// ---- Phase 12 P1-1: strip UTF-8 BOM from the first column key ----
+const stripBomFromKey = (key) =>
+    key && key.charCodeAt(0) === 0xFEFF ? key.slice(1) : key;
+
+const stripBomFromRow = (row) => {
+    const out = {};
+    for (const k of Object.keys(row)) {
+        out[stripBomFromKey(k)] = row[k];
+    }
+    return out;
+};
+
 const readCsv = (filePath) =>
     new Promise((resolve, reject) => {
         const rows = [];
         fs.createReadStream(filePath)
             .pipe(csv())
-            .on('data', (d) => rows.push(d))
+            .on('data', (d) => rows.push(stripBomFromRow(d)))
             .on('end', () => resolve(rows))
             .on('error', reject);
     });
