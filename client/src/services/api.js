@@ -16,7 +16,7 @@ const getApiUrl = () => {
 };
 
 const API_BASE_URL = getApiUrl();
-console.log('🔗 API URL:', API_BASE_URL); // Helpful for debugging
+console.log('ðŸ”— API URL:', API_BASE_URL); // Helpful for debugging
 
 // Create axios instance
 const api = axios.create({
@@ -92,9 +92,8 @@ export const deleteUser = (id) => {
 };
 
 export const resetUserPassword = (id, new_password) => {
-    return api.post(/admin/users/${id}/reset-password, { new_password });
+    return api.post(`/admin/users/${id}/reset-password`, { new_password });
 };
-
 
 // ============ PRODUCT APIS ============
 export const getProducts = () => {
