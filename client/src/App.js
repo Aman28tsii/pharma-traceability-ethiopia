@@ -5,7 +5,7 @@ import { OfflineProvider } from './contexts/OfflineContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import Scanner from './pages/Scanner';
+c
 import Products from './pages/Products';
 import Batches from './pages/Batches';
 import Stock from './pages/Stock';
