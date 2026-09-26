@@ -301,10 +301,10 @@ app.post('/api/admin/users/:id/reset-password', auth, requireRole(['admin']), as
         const hashedPassword = await bcrypt.hash(new_password, 10);
 
         const result = await pool.query(
-            UPDATE users
+            `UPDATE users
              SET password = $1, updated_at = NOW()
              WHERE id = $2 AND organization_id = $3
-             RETURNING id, name, email, role, is_active,
+             RETURNING id, name, email, role, is_active`,
             [hashedPassword, req.params.id, req.user.organization_id]
         );
 
@@ -328,6 +328,7 @@ app.post('/api/admin/users/:id/reset-password', auth, requireRole(['admin']), as
         res.status(500).json({ error: 'Failed to reset password' });
     }
 });
+
 app.delete('/api/admin/users/:id', auth, requireRole(['admin']), async (req, res) => {
     try {
         const result = await pool.query(
@@ -1781,6 +1782,7 @@ app.get('/readyz', async (req, res) => {
         });
     }
 });
+
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
     res.json({ 
