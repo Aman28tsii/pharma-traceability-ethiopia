@@ -31,6 +31,15 @@ const statusLabel = (batch) => {
     return 'Active';
 };
 
+const emptyForm = {
+    product_id: '',
+    batch_number: '',
+    expiry_date: '',
+    quantity: 100,
+    serialization: 'none',
+    serialsText: '',
+};
+
 const Batches = () => {
     const [products, setProducts] = useState([]);
     const [batches, setBatches] = useState([]);
@@ -41,12 +50,7 @@ const Batches = () => {
     const [success, setSuccess] = useState(null);
     const [error, setError] = useState(null);
     const [showModal, setShowModal] = useState(false);
-    const [formData, setFormData] = useState({
-        product_id: '',
-        batch_number: '',
-        expiry_date: '',
-        quantity: 100
-    });
+    const [formData, setFormData] = useState(emptyForm);
     const { user } = useAuth();
     const navigate = useNavigate();
 
@@ -80,21 +84,57 @@ const Batches = () => {
         }
     };
 
+    const parsedSerials = () => {
+        if (formData.serialization !== 'supplied') return [];
+        return formData.serialsText
+            .split('\n')
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+    };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setSubmitting(true);
         setError(null);
         setSuccess(null);
-        
+
         try {
-            await createBatch(formData);
-            setSuccess(`Batch ${formData.batch_number} created successfully with ${formData.quantity} serial units!`);
-            setFormData({
-                product_id: '',
-                batch_number: '',
-                expiry_date: '',
-                quantity: 100
-            });
+            const payload = {
+                product_id: formData.product_id,
+                batch_number: formData.batch_number,
+                expiry_date: formData.expiry_date,
+                quantity: formData.quantity,
+                serialization: formData.serialization,
+            };
+
+            if (formData.serialization === 'supplied') {
+                const list = parsedSerials();
+                if (list.length !== Number(formData.quantity)) {
+                    setError(`Expected ${formData.quantity} serials, got ${list.length}.`);
+                    setSubmitting(false);
+                    return;
+                }
+                const seen = new Set();
+                for (const s of list) {
+                    if (seen.has(s)) {
+                        setError(`Duplicate serial: ${s}`);
+                        setSubmitting(false);
+                        return;
+                    }
+                    seen.add(s);
+                }
+                payload.serials = list;
+            }
+
+            const res = await createBatch(payload);
+            const count = res?.data?.serial_units_count ?? 0;
+            const mode = res?.data?.serialization ?? formData.serialization;
+            setSuccess(
+                mode === 'none'
+                    ? `Batch ${formData.batch_number} created (non-serialized, qty ${formData.quantity}).`
+                    : `Batch ${formData.batch_number} created with ${count} serial units.`
+            );
+            setFormData(emptyForm);
             setShowModal(false);
             setTimeout(() => setSuccess(null), 5000);
             fetchBatches();
@@ -155,7 +195,7 @@ const Batches = () => {
                         {success}
                     </div>
                 )}
-                
+
                 {/* Error Message */}
                 {error && (
                     <div className="mb-4 p-4 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-xl flex items-center gap-2 border border-red-200 dark:border-red-800">
@@ -269,11 +309,11 @@ const Batches = () => {
                     <div className="bg-white dark:bg-gray-800 rounded-xl max-w-md w-full p-6 max-h-screen overflow-y-auto">
                         <div className="flex justify-between items-center mb-4">
                             <h2 className="text-xl font-bold text-gray-900 dark:text-white">Create New Batch</h2>
-                            <button onClick={() => setShowModal(false)} className="text-gray-500 dark:text-gray-400">
+                            <button onClick={() => { setShowModal(false); setFormData(emptyForm); }} className="text-gray-500 dark:text-gray-400">
                                 <X className="w-6 h-6" />
                             </button>
                         </div>
-                        
+
                         <form onSubmit={handleSubmit} className="space-y-4">
                             <div>
                                 <label className="label">Select Product *</label>
@@ -324,21 +364,52 @@ const Batches = () => {
                                     min="1"
                                     max="10000"
                                     value={formData.quantity}
-                                    onChange={(e) => setFormData({...formData, quantity: parseInt(e.target.value)})}
+                                    onChange={(e) => setFormData({...formData, quantity: parseInt(e.target.value) || 0})}
                                     required
                                 />
                                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">How many individual units in this batch?</p>
                             </div>
 
+                            <div>
+                                <label className="label">Serialization *</label>
+                                <select
+                                    className="input"
+                                    value={formData.serialization}
+                                    onChange={(e) => setFormData({...formData, serialization: e.target.value, serialsText: ''})}
+                                >
+                                    <option value="none">Non-serialized (batch + quantity tracking)</option>
+                                    <option value="supplied">Serialized (provide individual serial numbers)</option>
+                                </select>
+                            </div>
+
+                            {formData.serialization === 'supplied' && (
+                                <div>
+                                    <label className="label">Serial numbers (one per line) *</label>
+                                    <textarea
+                                        className="input font-mono text-sm"
+                                        rows="6"
+                                        placeholder={`Paste ${formData.quantity} serials, one per line`}
+                                        value={formData.serialsText}
+                                        onChange={(e) => setFormData({...formData, serialsText: e.target.value})}
+                                        required
+                                    />
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                        Expected: {formData.quantity} serials. Provided: {parsedSerials().length}.
+                                    </p>
+                                </div>
+                            )}
+
                             <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg">
                                 <p className="text-sm text-blue-800 dark:text-blue-300 flex items-center gap-2">
                                     <Package className="w-4 h-4" />
-                                    {formData.quantity} serial numbers will be generated automatically
+                                    {formData.serialization === 'none'
+                                        ? `Batch will be tracked by quantity only (${formData.quantity} units, no serials).`
+                                        : `Batch will include ${formData.quantity} individual serialized units.`}
                                 </p>
                             </div>
 
                             <div className="flex gap-3 pt-2">
-                                <Button type="button" variant="outline" onClick={() => setShowModal(false)} fullWidth>
+                                <Button type="button" variant="outline" onClick={() => { setShowModal(false); setFormData(emptyForm); }} fullWidth>
                                     Cancel
                                 </Button>
                                 <Button type="submit" variant="primary" loading={submitting} fullWidth>

@@ -585,17 +585,48 @@ app.get('/api/batches', auth, async (req, res) => {
     }
 });
 
+// Phase 14C M2: batch create now supports serialization='none'|'supplied'. Omitted => 'none'.
+// serilaization='supplied' requires `serials: string[]` matching quantity.
 app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, res) => {
-    const { product_id, batch_number, expiry_date, quantity } = req.body;
-    
+    const { product_id, batch_number, expiry_date, quantity, serialization, serials } = req.body;
+
     if (!product_id || !batch_number || !expiry_date || !quantity) {
         return res.status(400).json({ error: 'Missing required fields' });
     }
-    
+
+    const qty = Number(quantity);
+    if (!Number.isInteger(qty) || qty < 1) {
+        return res.status(400).json({ error: 'Quantity must be a positive integer' });
+    }
+
+    const mode = serialization === undefined || serialization === null ? 'none' : String(serialization).toLowerCase();
+    if (mode !== 'none' && mode !== 'supplied') {
+        return res.status(400).json({ error: "serialization must be 'none' or 'supplied'" });
+    }
+
+    // Validate supplied serials up front, before opening a transaction.
+    let serialList = [];
+    if (mode === 'supplied') {
+        if (!Array.isArray(serials)) {
+            return res.status(400).json({ error: "serialization='supplied' requires a 'serials' array" });
+        }
+        serialList = serials.map(s => (typeof s === 'string' ? s.trim() : '')).filter(s => s.length > 0);
+        if (serialList.length !== qty) {
+            return res.status(400).json({ error: `Expected ${qty} serials, got ${serialList.length}` });
+        }
+        const seen = new Set();
+        for (const s of serialList) {
+            if (seen.has(s)) {
+                return res.status(400).json({ error: `Duplicate serial in request: ${s}` });
+            }
+            seen.add(s);
+        }
+    }
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        
+
         const productResult = await client.query(
             'SELECT gtin, product_name FROM products WHERE id = $1 AND organization_id = $2',
             [product_id, req.user.organization_id]
@@ -604,63 +635,97 @@ app.post('/api/batches', auth, requireRole(['admin', 'importer']), async (req, r
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Product not found' });
         }
-        
+
         const product = productResult.rows[0];
-        
-        const batchResult = await client.query(
-            `INSERT INTO batches (batch_number, product_id, expiry_date, quantity, created_by, organization_id, location_id) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7) 
-             RETURNING *`,
-            [batch_number, product_id, expiry_date, quantity, req.user.id, req.user.organization_id, req.user.location_id]
-        );
-        
-        const serialUnits = [];
-        for (let i = 1; i <= quantity; i++) {
-            const serialNumber = `${product.gtin.slice(-6)}${batch_number.slice(0, 4)}${String(i).padStart(8, '0')}`;
-            const unitResult = await client.query(
-                `INSERT INTO serialized_units (gtin, serial_number, batch_number, expiry_date, status, organization_id, location_id) 
-                 VALUES ($1, $2, $3, $4, 'active', $5, $6) 
-                 RETURNING *`,
-                [product.gtin, serialNumber, batch_number, expiry_date, req.user.organization_id, req.user.location_id]
+
+        // Duplicate-in-DB check for supplied serials (org-scoped).
+        if (mode === 'supplied' && serialList.length > 0) {
+            const existing = await client.query(
+                `SELECT serial_number FROM serialized_units
+                 WHERE organization_id = $1 AND serial_number = ANY($2::text[])`,
+                [req.user.organization_id, serialList]
             );
-            serialUnits.push(unitResult.rows[0]);
+            if (existing.rows.length > 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    error: `Serial(s) already exist in this branch: ${existing.rows.map(r => r.serial_number).join(', ')}`,
+                });
+            }
         }
-        
-        // Phase 6: write one manufacture trace event per serialized unit.
-        if (serialUnits.length > 0) {
-            const serialNumbers = serialUnits.map(u => u.serial_number);
+
+        const batchResult = await client.query(
+            `INSERT INTO batches
+                (batch_number, product_id, expiry_date, quantity, on_hand_quantity, status, is_recalled,
+                 created_by, organization_id, location_id)
+             VALUES ($1, $2, $3, $4, $4, 'active', false, $5, $6, $7)
+             RETURNING *`,
+            [batch_number, product_id, expiry_date, qty, req.user.id, req.user.organization_id, req.user.location_id]
+        );
+        const batchId = batchResult.rows[0].id;
+
+        // Phase 11/13 consistency: create one initial stock movement for opening balance.
+        await client.query(
+            `INSERT INTO stock_movements
+                (organization_id, batch_id, batch_number, gtin, movement_type, quantity_delta,
+                 reference_type, counterparty, notes, performed_by, ip_address)
+             VALUES ($1, $2, $3, $4, 'initial', $5, 'initial', NULL, $6, $7, $8)`,
+            [req.user.organization_id, batchId, batch_number, product.gtin, qty,
+             'Single batch create opening balance', req.user.id, req.ip]
+        );
+
+        let serialUnitsCount = 0;
+        if (mode === 'supplied' && serialList.length > 0) {
+            await client.query(
+                `INSERT INTO serialized_units
+                    (gtin, serial_number, batch_number, expiry_date, status, organization_id, location_id)
+                 SELECT $1, s, $2, $3, 'active', $4, $5
+                 FROM unnest($6::text[]) AS s`,
+                [product.gtin, batch_number, expiry_date, req.user.organization_id,
+                 req.user.location_id, serialList]
+            );
+            serialUnitsCount = serialList.length;
+
             await client.query(
                 `INSERT INTO trace_events
                     (serial_number, event_type, to_gln, location, user_id,
                      organization_id, location_id, batch_number)
-                 SELECT s, 'manufacture', $2, $3, $4, $5, $6, $7
-                 FROM unnest($1::text[]) AS s`,
+                 SELECT s, 'manufacture', $1, $2, $3, $4, $5, $6
+                 FROM unnest($7::text[]) AS s`,
                 [
-                    serialNumbers,
                     req.user.gln || null,
                     null,
                     req.user.id,
                     req.user.organization_id,
                     req.user.location_id,
                     batch_number,
+                    serialList,
                 ]
             );
         }
-        
+
         await client.query('COMMIT');
+
         await logAction(pool, {
             userId: req.user.id,
             organizationId: req.user.organization_id,
             action: 'CREATE',
             entityType: 'batch',
-            entityId: batchResult.rows[0].id,
-            newData: { batch: batchResult.rows[0], serial_units_count: serialUnits.length },
+            entityId: batchId,
+            newData: {
+                batch: batchResult.rows[0],
+                serialization: mode,
+                serial_units_count: serialUnitsCount,
+            },
             ipAddress: req.ip,
         });
-        res.status(201).json({ 
-            batch: batchResult.rows[0], 
-            serial_units_count: serialUnits.length,
-            message: `Batch ${batch_number} created with ${serialUnits.length} serial units`
+
+        res.status(201).json({
+            batch: batchResult.rows[0],
+            serialization: mode,
+            serial_units_count: serialUnitsCount,
+            message: mode === 'none'
+                ? `Batch ${batch_number} created (non-serialized, qty ${qty})`
+                : `Batch ${batch_number} created with ${serialUnitsCount} serial units`,
         });
     } catch (err) {
         await client.query('ROLLBACK');
