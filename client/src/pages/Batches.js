@@ -1,15 +1,42 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getProducts, createBatch } from '../services/api';
+import { getProducts, createBatch, getBatches } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { ArrowLeft, Package, AlertCircle, CheckCircle, X, Plus } from 'lucide-react';
+import { ArrowLeft, Package, AlertCircle, CheckCircle, X, Plus, RefreshCw } from 'lucide-react';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
 import { PageLoader } from '../components/ui/LoadingSpinner';
+
+const fmtDate = (d) => {
+    if (!d) return '—';
+    try {
+        return new Date(d).toLocaleDateString();
+    } catch {
+        return String(d);
+    }
+};
+
+const statusBadgeVariant = (batch) => {
+    if (batch.is_recalled) return 'danger';
+    if (batch.status === 'expired') return 'warning';
+    if (Number(batch.on_hand_quantity) === 0) return 'default';
+    return 'success';
+};
+
+const statusLabel = (batch) => {
+    if (batch.is_recalled) return 'Recalled';
+    if (batch.status === 'expired') return 'Expired';
+    if (Number(batch.on_hand_quantity) === 0) return 'Empty';
+    return 'Active';
+};
 
 const Batches = () => {
     const [products, setProducts] = useState([]);
+    const [batches, setBatches] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [batchesLoading, setBatchesLoading] = useState(false);
+    const [batchesError, setBatchesError] = useState(null);
     const [submitting, setSubmitting] = useState(false);
     const [success, setSuccess] = useState(null);
     const [error, setError] = useState(null);
@@ -25,6 +52,7 @@ const Batches = () => {
 
     useEffect(() => {
         fetchProducts();
+        fetchBatches();
     }, []);
 
     const fetchProducts = async () => {
@@ -35,6 +63,20 @@ const Batches = () => {
             console.error('Failed to fetch products:', error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchBatches = async () => {
+        setBatchesLoading(true);
+        setBatchesError(null);
+        try {
+            const response = await getBatches();
+            setBatches(response.data || []);
+        } catch (err) {
+            console.error('Failed to fetch batches:', err);
+            setBatchesError('Failed to load batches.');
+        } finally {
+            setBatchesLoading(false);
         }
     };
 
@@ -55,6 +97,7 @@ const Batches = () => {
             });
             setShowModal(false);
             setTimeout(() => setSuccess(null), 5000);
+            fetchBatches();
         } catch (error) {
             setError(error.response?.data?.error || 'Failed to create batch');
         } finally {
@@ -88,8 +131,15 @@ const Batches = () => {
                 <button onClick={() => navigate('/dashboard')} className="p-1 hover:bg-blue-700 dark:hover:bg-blue-800 rounded-lg">
                     <ArrowLeft className="w-6 h-6" />
                 </button>
-                <h1 className="text-xl font-bold flex-1">Create New Batch</h1>
-                <button 
+                <h1 className="text-xl font-bold flex-1">Batches</h1>
+                <button
+                    onClick={fetchBatches}
+                    className="p-2 hover:bg-blue-700 dark:hover:bg-blue-800 rounded-lg"
+                    title="Refresh batches"
+                >
+                    <RefreshCw className="w-5 h-5" />
+                </button>
+                <button
                     onClick={() => setShowModal(true)}
                     className="bg-white dark:bg-gray-100 text-blue-600 dark:text-blue-700 p-2 rounded-full"
                 >
@@ -117,24 +167,99 @@ const Batches = () => {
                 {/* Batches List */}
                 <Card>
                     <h2 className="font-semibold text-lg text-gray-900 dark:text-white mb-4">Recent Batches</h2>
-                    <div className="space-y-3">
-                        {products.length === 0 ? (
-                            <div className="text-center py-8">
-                                <Package className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-                                <p className="text-gray-500 dark:text-gray-400">No batches created yet</p>
-                                <Button onClick={() => setShowModal(true)} variant="primary" className="mt-4">
-                                    Create First Batch
-                                </Button>
+
+                    {batchesLoading ? (
+                        <div className="flex justify-center items-center py-8">
+                            <div className="animate-spin rounded-full h-8 w-8 border-4 border-gray-200 border-t-blue-600" />
+                        </div>
+                    ) : batchesError ? (
+                        <div className="text-center py-8">
+                            <AlertCircle className="w-12 h-12 text-red-500 dark:text-red-400 mx-auto mb-3" />
+                            <p className="text-red-600 dark:text-red-400">{batchesError}</p>
+                            <Button onClick={fetchBatches} variant="outline" className="mt-4">
+                                Try Again
+                            </Button>
+                        </div>
+                    ) : batches.length === 0 ? (
+                        <div className="text-center py-8">
+                            <Package className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                            <p className="text-gray-500 dark:text-gray-400">No batches created yet</p>
+                            <Button onClick={() => setShowModal(true)} variant="primary" className="mt-4">
+                                Create First Batch
+                            </Button>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Desktop table */}
+                            <div className="hidden md:block overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead className="border-b border-gray-200 dark:border-gray-700">
+                                        <tr>
+                                            <th className="text-left py-3 px-3 text-gray-600 dark:text-gray-400 font-medium">Batch Number</th>
+                                            <th className="text-left py-3 px-3 text-gray-600 dark:text-gray-400 font-medium">Product</th>
+                                            <th className="text-left py-3 px-3 text-gray-600 dark:text-gray-400 font-medium">Expiry</th>
+                                            <th className="text-right py-3 px-3 text-gray-600 dark:text-gray-400 font-medium">On Hand</th>
+                                            <th className="text-right py-3 px-3 text-gray-600 dark:text-gray-400 font-medium">Serialized</th>
+                                            <th className="text-left py-3 px-3 text-gray-600 dark:text-gray-400 font-medium">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {batches.map((b) => (
+                                            <tr key={b.id} className="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                                <td className="py-3 px-3 font-mono text-gray-900 dark:text-white">{b.batch_number}</td>
+                                                <td className="py-3 px-3">
+                                                    <div className="text-gray-900 dark:text-white">{b.product_name || '—'}</div>
+                                                    {b.gtin && <div className="text-xs text-gray-500 dark:text-gray-400 font-mono">{b.gtin}</div>}
+                                                </td>
+                                                <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{fmtDate(b.expiry_date)}</td>
+                                                <td className="py-3 px-3 text-right font-semibold text-gray-900 dark:text-white">{b.on_hand_quantity}</td>
+                                                <td className="py-3 px-3 text-right text-gray-700 dark:text-gray-300">{b.serialized_count ?? 0}</td>
+                                                <td className="py-3 px-3">
+                                                    <Badge variant={statusBadgeVariant(b)}>{statusLabel(b)}</Badge>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
                             </div>
-                        ) : (
-                            <div className="space-y-3">
-                                {/* Add your existing batches list here */}
-                                <p className="text-gray-500 dark:text-gray-400 text-center py-4">
-                                    Click the + button to create a new batch
-                                </p>
+
+                            {/* Mobile card list */}
+                            <div className="md:hidden space-y-3">
+                                {batches.map((b) => (
+                                    <div key={b.id} className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                                        <div className="flex justify-between items-start gap-2">
+                                            <div className="font-mono font-semibold text-gray-900 dark:text-white break-all">
+                                                {b.batch_number}
+                                            </div>
+                                            <Badge variant={statusBadgeVariant(b)}>{statusLabel(b)}</Badge>
+                                        </div>
+                                        <div className="text-sm text-gray-700 dark:text-gray-300 mt-1">
+                                            {b.product_name || '—'}
+                                        </div>
+                                        {b.gtin && (
+                                            <div className="text-xs text-gray-500 dark:text-gray-400 font-mono mt-0.5 break-all">
+                                                {b.gtin}
+                                            </div>
+                                        )}
+                                        <div className="grid grid-cols-2 gap-2 mt-2 text-xs text-gray-600 dark:text-gray-400">
+                                            <div>
+                                                <div className="uppercase tracking-wide">Expiry</div>
+                                                <div className="text-gray-900 dark:text-white">{fmtDate(b.expiry_date)}</div>
+                                            </div>
+                                            <div>
+                                                <div className="uppercase tracking-wide">On Hand</div>
+                                                <div className="text-gray-900 dark:text-white font-semibold">{b.on_hand_quantity}</div>
+                                            </div>
+                                            <div>
+                                                <div className="uppercase tracking-wide">Serialized</div>
+                                                <div className="text-gray-900 dark:text-white">{b.serialized_count ?? 0}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
-                        )}
-                    </div>
+                        </>
+                    )}
                 </Card>
             </div>
 
