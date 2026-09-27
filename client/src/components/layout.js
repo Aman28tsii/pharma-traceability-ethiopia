@@ -1,8 +1,12 @@
+﻿// client/src/components/layout.js
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { Menu, X, LayoutDashboard, Scan, Package, Layers, AlertTriangle, FileText, Users, LogOut, Shield, Sun, Moon, Activity, Boxes } from 'lucide-react';
+import {
+  Menu, X, LayoutDashboard, Scan, Package, Layers, AlertTriangle,
+  FileText, Users, LogOut, Shield, Sun, Moon, Activity, Boxes
+} from 'lucide-react';
 
 const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -46,10 +50,11 @@ const Layout = ({ children }) => {
 
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900">
-      {/* DESKTOP SIDEBAR */}
+      {/* ==================== DESKTOP SIDEBAR ==================== */}
       <div className="hidden md:fixed md:inset-y-0 md:flex md:w-64 md:flex-col">
-        <div className="flex flex-col flex-1 bg-gradient-to-b from-blue-900 to-blue-800 dark:from-gray-800 dark:to-gray-900">
-          <div className="p-6 border-b border-blue-700 dark:border-gray-700">
+        <div className="flex flex-col flex-1 bg-gradient-to-b from-blue-900 to-blue-800 dark:from-gray-800 dark:to-gray-900 overflow-hidden">
+          {/* Brand */}
+          <div className="p-6 border-b border-blue-700 dark:border-gray-700 flex-shrink-0">
             <div className="flex items-center gap-3">
               <Shield className="w-8 h-8 text-green-400" />
               <div>
@@ -59,6 +64,7 @@ const Layout = ({ children }) => {
             </div>
           </div>
 
+          {/* Nav (scrolls) */}
           <nav className="flex-1 py-6 px-4 space-y-1 overflow-y-auto">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -79,20 +85,21 @@ const Layout = ({ children }) => {
             })}
           </nav>
 
-          <div className="p-4 border-t border-blue-700 dark:border-gray-700">
+          {/* Footer (always visible at bottom) */}
+          <div className="p-4 border-t border-blue-700 dark:border-gray-700 flex-shrink-0">
             <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-blue-700 dark:bg-gray-700 flex items-center justify-center">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-full bg-blue-700 dark:bg-gray-700 flex items-center justify-center flex-shrink-0">
                   <span className="text-white font-semibold">{user?.name?.charAt(0) || 'A'}</span>
                 </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-white">{user?.name}</p>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{user?.name}</p>
                   <p className="text-xs text-blue-300 dark:text-gray-400 capitalize">{user?.role}</p>
                 </div>
               </div>
               <button
                 onClick={toggleDarkMode}
-                className="p-2 rounded-lg bg-blue-700 dark:bg-gray-700 text-white hover:bg-blue-600 dark:hover:bg-gray-600 transition"
+                className="p-2 rounded-lg bg-blue-700 dark:bg-gray-700 text-white hover:bg-blue-600 dark:hover:bg-gray-600 transition flex-shrink-0"
                 title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               >
                 {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -109,16 +116,27 @@ const Layout = ({ children }) => {
         </div>
       </div>
 
-      {/* MOBILE HEADER */}
+      {/* ==================== MOBILE HEADER ==================== */}
       <div className="md:hidden sticky top-0 z-30 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
         <div className="px-4 py-3 flex items-center justify-between">
-          <button onClick={() => setSidebarOpen(true)} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
             <Menu className="w-5 h-5 text-gray-600 dark:text-gray-400" />
           </button>
           <h1 className="text-lg font-bold text-blue-800 dark:text-white">PharmaTrace</h1>
           <div className="flex items-center gap-1">
-            <button onClick={toggleDarkMode} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">
-              {darkMode ? <Sun className="w-5 h-5 text-gray-600 dark:text-gray-400" /> : <Moon className="w-5 h-5 text-gray-600 dark:text-gray-400" />}
+            <button
+              onClick={toggleDarkMode}
+              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+              title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            >
+              {darkMode ? (
+                <Sun className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+              ) : (
+                <Moon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+              )}
             </button>
             <button
               onClick={handleLogout}
@@ -131,10 +149,32 @@ const Layout = ({ children }) => {
         </div>
       </div>
 
-      {/* MOBILE SIDEBAR OVERLAY */}
+      {/* ==================== DESKTOP TOP BAR ==================== */}
+      {/* Always visible on md+ so theme toggle + logout are never hidden */}
+      <div className="hidden md:flex fixed top-0 right-0 left-64 z-20 items-center justify-end gap-2 px-6 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+        <button
+          onClick={toggleDarkMode}
+          className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition"
+          title={darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+        >
+          {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+        </button>
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+        >
+          <LogOut className="w-4 h-4" />
+          <span className="text-sm font-medium">Logout</span>
+        </button>
+      </div>
+
+      {/* ==================== MOBILE SIDEBAR OVERLAY ==================== */}
       {sidebarOpen && (
         <>
-          <div className="fixed inset-0 bg-black bg-opacity-50 z-40" onClick={() => setSidebarOpen(false)} />
+          <div
+            className="fixed inset-0 bg-black bg-opacity-50 z-40"
+            onClick={() => setSidebarOpen(false)}
+          />
           <div className="fixed top-0 left-0 h-full w-64 bg-gradient-to-b from-blue-900 to-blue-800 dark:from-gray-800 dark:to-gray-900 shadow-2xl z-50 overflow-y-auto">
             <div className="p-4 border-b border-blue-700 dark:border-gray-700 flex justify-between items-center">
               <div className="flex items-center gap-3">
@@ -183,7 +223,10 @@ const Layout = ({ children }) => {
                 </div>
               </div>
               <button
-                onClick={() => { handleLogout(); setSidebarOpen(false); }}
+                onClick={() => {
+                  handleLogout();
+                  setSidebarOpen(false);
+                }}
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white transition"
               >
                 <LogOut className="w-5 h-5" />
@@ -194,7 +237,7 @@ const Layout = ({ children }) => {
         </>
       )}
 
-      {/* MOBILE BOTTOM NAVIGATION */}
+      {/* ==================== MOBILE BOTTOM NAVIGATION ==================== */}
       <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shadow-lg z-40 md:hidden">
         <div className="flex justify-around items-center py-2">
           {filteredBottomNav.map((item) => {
@@ -225,8 +268,9 @@ const Layout = ({ children }) => {
         </div>
       </div>
 
-      {/* MAIN CONTENT */}
-      <div className="md:pl-64">
+      {/* ==================== MAIN CONTENT ==================== */}
+      {/* pt-16 offsets the fixed desktop top bar; md:pb-6 accounts for no mobile bottom nav */}
+      <div className="md:pl-64 pt-0 md:pt-16">
         <main className="p-4 pb-24 md:pb-6">
           {children}
         </main>
