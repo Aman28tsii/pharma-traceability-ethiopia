@@ -47,7 +47,7 @@ const Layout = ({ children }) => {
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-gray-900">
       {/* DESKTOP SIDEBAR */}
-      <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
+      <div className="hidden md:fixed md:inset-y-0 md:flex md:w-64 md:flex-col">
         <div className="flex flex-col flex-1 bg-gradient-to-b from-blue-900 to-blue-800 dark:from-gray-800 dark:to-gray-900">
           <div className="p-6 border-b border-blue-700 dark:border-gray-700">
             <div className="flex items-center gap-3">
@@ -59,7 +59,7 @@ const Layout = ({ children }) => {
             </div>
           </div>
 
-          <nav className="flex-1 py-6 px-4 space-y-1">
+          <nav className="flex-1 py-6 px-4 space-y-1 overflow-y-auto">
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
@@ -110,7 +110,7 @@ const Layout = ({ children }) => {
       </div>
 
       {/* MOBILE HEADER */}
-      <div className="lg:hidden sticky top-0 z-30 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
+      <div className="md:hidden sticky top-0 z-30 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-sm">
         <div className="px-4 py-3 flex items-center justify-between">
           <button onClick={() => setSidebarOpen(true)} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">
             <Menu className="w-5 h-5 text-gray-600 dark:text-gray-400" />
@@ -195,7 +195,7 @@ const Layout = ({ children }) => {
       )}
 
       {/* MOBILE BOTTOM NAVIGATION */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shadow-lg z-40 lg:hidden">
+      <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shadow-lg z-40 md:hidden">
         <div className="flex justify-around items-center py-2">
           {filteredBottomNav.map((item) => {
             const Icon = item.icon;
@@ -226,8 +226,8 @@ const Layout = ({ children }) => {
       </div>
 
       {/* MAIN CONTENT */}
-      <div className="lg:pl-64">
-        <main className="p-4 pb-24 lg:pb-6">
+      <div className="md:pl-64">
+        <main className="p-4 pb-24 md:pb-6">
           {children}
         </main>
       </div>
