@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -11,7 +11,6 @@ const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const { darkMode, toggleDarkMode } = useTheme();
 
-  // Role-based navigation items
   const allNavItems = [
     { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
     { path: '/scanner', icon: Scan, label: 'Scanner', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
@@ -24,19 +23,22 @@ const Layout = ({ children }) => {
     { path: '/admin/audit-logs', icon: Activity, label: 'Audit Logs', roles: ['admin'] },
   ];
 
-  // Filter navigation based on user role
   const navItems = allNavItems.filter(item => item.roles.includes(user?.role));
 
-  // Bottom navigation for mobile (simplified - only main pages)
   const bottomNavItems = [
     { path: '/dashboard', icon: LayoutDashboard, label: 'Home', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
     { path: '/scanner', icon: Scan, label: 'Scan', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
     { path: '/products', icon: Package, label: 'Products', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
+    { path: '/stock', icon: Boxes, label: 'Stock', roles: ['admin', 'importer', 'distributor', 'pharmacy', 'auditor'] },
   ];
 
   const filteredBottomNav = bottomNavItems.filter(item => item.roles.includes(user?.role));
 
   const isActive = (path) => location.pathname === path;
+
+  const handleLogout = () => {
+    logout();
+  };
 
   if (location.pathname === '/login') {
     return <>{children}</>;
@@ -56,7 +58,7 @@ const Layout = ({ children }) => {
               </div>
             </div>
           </div>
-          
+
           <nav className="flex-1 py-6 px-4 space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -65,8 +67,8 @@ const Layout = ({ children }) => {
                   key={item.path}
                   onClick={() => navigate(item.path)}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-                    isActive(item.path) 
-                      ? 'bg-blue-700 dark:bg-gray-700 text-white' 
+                    isActive(item.path)
+                      ? 'bg-blue-700 dark:bg-gray-700 text-white'
                       : 'text-blue-100 dark:text-gray-300 hover:bg-blue-800 dark:hover:bg-gray-800'
                   }`}
                 >
@@ -76,7 +78,7 @@ const Layout = ({ children }) => {
               );
             })}
           </nav>
-          
+
           <div className="p-4 border-t border-blue-700 dark:border-gray-700">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-3">
@@ -97,7 +99,7 @@ const Layout = ({ children }) => {
               </button>
             </div>
             <button
-              onClick={logout}
+              onClick={handleLogout}
               className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-blue-700 dark:bg-gray-700 text-blue-100 dark:text-gray-300 hover:bg-blue-600 dark:hover:bg-gray-600 transition"
             >
               <LogOut className="w-4 h-4" />
@@ -114,9 +116,18 @@ const Layout = ({ children }) => {
             <Menu className="w-5 h-5 text-gray-600 dark:text-gray-400" />
           </button>
           <h1 className="text-lg font-bold text-blue-800 dark:text-white">PharmaTrace</h1>
-          <button onClick={toggleDarkMode} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">
-            {darkMode ? <Sun className="w-5 h-5 text-gray-600 dark:text-gray-400" /> : <Moon className="w-5 h-5 text-gray-600 dark:text-gray-400" />}
-          </button>
+          <div className="flex items-center gap-1">
+            <button onClick={toggleDarkMode} className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700">
+              {darkMode ? <Sun className="w-5 h-5 text-gray-600 dark:text-gray-400" /> : <Moon className="w-5 h-5 text-gray-600 dark:text-gray-400" />}
+            </button>
+            <button
+              onClick={handleLogout}
+              className="p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 dark:text-red-400"
+              title="Logout"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -124,7 +135,7 @@ const Layout = ({ children }) => {
       {sidebarOpen && (
         <>
           <div className="fixed inset-0 bg-black bg-opacity-50 z-40" onClick={() => setSidebarOpen(false)} />
-          <div className="fixed top-0 left-0 h-full w-64 bg-gradient-to-b from-blue-900 to-blue-800 dark:from-gray-800 dark:to-gray-900 shadow-2xl z-50">
+          <div className="fixed top-0 left-0 h-full w-64 bg-gradient-to-b from-blue-900 to-blue-800 dark:from-gray-800 dark:to-gray-900 shadow-2xl z-50 overflow-y-auto">
             <div className="p-4 border-b border-blue-700 dark:border-gray-700 flex justify-between items-center">
               <div className="flex items-center gap-3">
                 <Shield className="w-8 h-8 text-green-400" />
@@ -137,7 +148,7 @@ const Layout = ({ children }) => {
                 <X className="w-6 h-6" />
               </button>
             </div>
-            
+
             <nav className="py-4 px-3 space-y-1">
               {navItems.map((item) => {
                 const Icon = item.icon;
@@ -149,8 +160,8 @@ const Layout = ({ children }) => {
                       setSidebarOpen(false);
                     }}
                     className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-                      isActive(item.path) 
-                        ? 'bg-blue-700 dark:bg-gray-700 text-white' 
+                      isActive(item.path)
+                        ? 'bg-blue-700 dark:bg-gray-700 text-white'
                         : 'text-blue-100 dark:text-gray-300 hover:bg-blue-800 dark:hover:bg-gray-800'
                     }`}
                   >
@@ -159,19 +170,31 @@ const Layout = ({ children }) => {
                   </button>
                 );
               })}
+            </nav>
+
+            <div className="px-3 pb-4 border-t border-blue-700 dark:border-gray-700 pt-4">
+              <div className="flex items-center gap-3 mb-3 px-2">
+                <div className="w-10 h-10 rounded-full bg-blue-700 dark:bg-gray-700 flex items-center justify-center">
+                  <span className="text-white font-semibold">{user?.name?.charAt(0) || 'A'}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-white truncate">{user?.name}</p>
+                  <p className="text-xs text-blue-300 dark:text-gray-400 capitalize">{user?.role}</p>
+                </div>
+              </div>
               <button
-                onClick={() => { logout(); setSidebarOpen(false); }}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-blue-100 dark:text-gray-300 hover:bg-blue-800 dark:hover:bg-gray-800 mt-4"
+                onClick={() => { handleLogout(); setSidebarOpen(false); }}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white transition"
               >
                 <LogOut className="w-5 h-5" />
                 <span className="font-medium">Logout</span>
               </button>
-            </nav>
+            </div>
           </div>
         </>
       )}
 
-      {/* MOBILE BOTTOM NAVIGATION - Role-based */}
+      {/* MOBILE BOTTOM NAVIGATION */}
       <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 shadow-lg z-40 lg:hidden">
         <div className="flex justify-around items-center py-2">
           {filteredBottomNav.map((item) => {
@@ -180,9 +203,9 @@ const Layout = ({ children }) => {
               <button
                 key={item.path}
                 onClick={() => navigate(item.path)}
-                className={`flex flex-col items-center gap-1 p-2 rounded-xl min-w-[64px] transition-all ${
-                  isActive(item.path) 
-                    ? 'text-blue-600 dark:text-blue-400' 
+                className={`flex flex-col items-center gap-1 p-2 rounded-xl min-w-[56px] transition-all ${
+                  isActive(item.path)
+                    ? 'text-blue-600 dark:text-blue-400'
                     : 'text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400'
                 }`}
               >
@@ -191,12 +214,20 @@ const Layout = ({ children }) => {
               </button>
             );
           })}
+          <button
+            onClick={handleLogout}
+            className="flex flex-col items-center gap-1 p-2 rounded-xl min-w-[56px] text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-all"
+            title="Logout"
+          >
+            <LogOut className="w-6 h-6" />
+            <span className="text-xs font-medium">Logout</span>
+          </button>
         </div>
       </div>
 
       {/* MAIN CONTENT */}
       <div className="lg:pl-64">
-        <main className="p-4 pb-20 lg:pb-6">
+        <main className="p-4 pb-24 lg:pb-6">
           {children}
         </main>
       </div>
