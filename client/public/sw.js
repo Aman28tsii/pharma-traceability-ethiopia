@@ -1,5 +1,5 @@
 // client/public/sw.js - Service Worker for PWA
-const CACHE_NAME = 'pharma-trace-v3';  // ← bumped from v1 to v3
+const CACHE_NAME = 'pharma-trace-v9';  // ← bumped from v1 to v3
 const urlsToCache = [
     '/',
     '/index.html',
