@@ -1,62 +1,58 @@
-// client/public/sw.js - Service Worker for PWA
-const CACHE_NAME = 'pharma-trace-v9';  // ← bumped from v1 to v3
+// client/public/sw.js
+const CACHE_NAME = 'pharma-trace-v4';
 const urlsToCache = [
     '/',
     '/index.html',
     '/manifest.json',
     '/favicon.ico',
+    '/favicon-16x16.png',
+    '/favicon-32x32.png',
     '/logo192.png',
-    '/logo512.png'
+    '/logo512.png',
+    '/icon.svg'
 ];
 
-// Install service worker
 self.addEventListener('install', event => {
-    self.skipWaiting();  // ← activate new SW immediately
+    self.skipWaiting();
     event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(cache => {
-                console.log('Opened cache:', CACHE_NAME);
-                return cache.addAll(urlsToCache);
-            })
+        caches.open(CACHE_NAME).then(cache => {
+            console.log('Opened cache:', CACHE_NAME);
+            return cache.addAll(urlsToCache);
+        })
     );
 });
 
-// Fetch from network first, fall back to cache (better for favicon updates)
 self.addEventListener('fetch', event => {
-    // Don't cache API calls
+    // Never cache API calls
     if (event.request.url.includes('/api/')) {
         return;
     }
 
+    // Network-first for everything else
     event.respondWith(
         fetch(event.request)
             .then(response => {
-                // Cache fresh response for next time
-                const responseClone = response.clone();
+                const clone = response.clone();
                 caches.open(CACHE_NAME).then(cache => {
-                    cache.put(event.request, responseClone);
+                    cache.put(event.request, clone);
                 });
                 return response;
             })
-            .catch(() => {
-                // Network failed, try cache
-                return caches.match(event.request);
-            })
+            .catch(() => caches.match(event.request))
     );
 });
 
-// Activate service worker — delete ALL old caches
 self.addEventListener('activate', event => {
     event.waitUntil(
         caches.keys().then(cacheNames => {
             return Promise.all(
-                cacheNames.map(cacheName => {
-                    if (cacheName !== CACHE_NAME) {
-                        console.log('Deleting old cache:', cacheName);
-                        return caches.delete(cacheName);
+                cacheNames.map(name => {
+                    if (name !== CACHE_NAME) {
+                        console.log('Deleting old cache:', name);
+                        return caches.delete(name);
                     }
                 })
             );
-        }).then(() => self.clients.claim())  // ← take control immediately
+        }).then(() => self.clients.claim())
     );
 });
